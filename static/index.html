@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flohio</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#9824;</text></svg>">
+  <link rel="stylesheet" href="/static/home.css">
+</head>
+<body>
+  <main class="home">
+    <header class="hero">
+      <h1>Flohio</h1>
+      <p>Welcome gents, ready to play some games?</p>
+    </header>
+
+    <section class="games" aria-label="Games">
+      <a class="game" href="/poker">
+        <div class="art felt">
+          <div id="poker-fan" class="fan"></div>
+        </div>
+        <div class="info">
+          <h2>Texas Hold'em</h2>
+          <p>No-limit poker with live webcams. Host a table and share the code, or fill empty seats with bots.</p>
+          <ul class="tags">
+            <li>2&ndash;9 players</li>
+            <li>Webcams</li>
+            <li>Bots</li>
+          </ul>
+          <span class="play">Play</span>
+        </div>
+      </a>
+
+      <a class="game" href="/wordle">
+        <div class="art wordle-art">
+          <div class="mini-grid" aria-hidden="true">
+            <span class="p">c</span><span class="a">r</span><span class="c">a</span><span class="a">n</span><span class="a">e</span>
+            <span class="c">s</span><span class="a">n</span><span class="c">a</span><span class="c">c</span><span class="c">k</span>
+            <span class="c">s</span><span class="c">t</span><span class="c">a</span><span class="c">c</span><span class="c">k</span>
+          </div>
+        </div>
+        <div class="info">
+          <h2>Flohdle</h2>
+          <p>Guess the five-letter word in six tries.</p>
+          <ul class="tags">
+            <li>1 player</li>
+            <li>Daily</li>
+          </ul>
+          <span class="play">Play</span>
+        </div>
+      </a>
+
+      <div class="game soon" aria-disabled="true">
+        <div class="art blank"><span>?</span></div>
+        <div class="info">
+          <h2>More games</h2>
+          <p>Coming soon.</p>
+        </div>
+      </div>
+    </section>
+
+    <p id="rejoin" class="rejoin" hidden>
+      You have a poker table in progress: <a id="rejoin-link" href="/poker">Rejoin table <strong id="rejoin-code"></strong></a>
+    </p>
+  </main>
+
+  <script src="/static/poker/cards.js"></script>
+  <script>
+    document.getElementById('poker-fan').innerHTML =
+      ['As', 'Kh', 'Qd', 'Jc', 'Ts'].map((c, i) => Cards.html(c, '', i)).join('');
+
+    try {
+      const session = JSON.parse(localStorage.getItem('vgp.session'));
+      if (session && session.code) {
+        document.getElementById('rejoin-code').textContent = session.code;
+        document.getElementById('rejoin-link').href = `/poker?code=${encodeURIComponent(session.code)}`;
+        document.getElementById('rejoin').hidden = false;
+      }
+    } catch {}
+  </script>
+</body>
+</html>
