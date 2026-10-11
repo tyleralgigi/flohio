@@ -159,9 +159,14 @@
     return code === '??' ? 'Face-down card' : `${RANK_NAMES[code[0]] || code[0]} of ${SUIT_NAMES[code[1]]}`;
   }
 
-  // `i` staggers the idle sway so cards don't bob in unison.
-  function html(code, cls = '', i = 0) {
-    return `<div class="card ${code === '??' ? 'back' : ''} ${cls}" style="--i:${i}" title="${label(code)}">${svg(code)}</div>`;
+  // `i` staggers the idle sway so cards don't bob in unison. `flip` builds a two-sided card
+  // (face plus back) so CSS can turn it over; see .card.flip in style.css.
+  function html(code, cls = '', i = 0, flip = false) {
+    const inner = flip && code !== '??'
+      ? `<div class="flipper"><div class="face front">${svg(code)}</div><div class="face rear">${svg('??')}</div></div>`
+      : svg(code);
+    const classes = ['card', code === '??' ? 'back' : '', flip && code !== '??' ? 'flip' : '', cls].filter(Boolean).join(' ');
+    return `<div class="${classes}" style="--i:${i}" title="${label(code)}">${inner}</div>`;
   }
 
   window.Cards = { html, svg, SUIT_COLORS };

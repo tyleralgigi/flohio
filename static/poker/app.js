@@ -4,7 +4,14 @@ const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 const SESSION_KEY = 'vgp.session';
 const NAME_KEY = 'vgp.name';
+const PREFS_KEY = 'vgp.prefs';
 const NUM_SLOTS = 9;
+// Dealing a hand: a quick shuffle, then every hole card within DEAL_TIME ms. The server's
+// DEAL_PAUSE covers all of it before anyone's clock starts.
+const SHUFFLE_TIME = 400;
+const DEAL_TIME = 1100;
+const FLY_TIME = 380; // ms for a card to travel from the deck (roughly when it lands)
+const BOARD_STEP = 260; // ms between board cards
 
 const app = {
   code: null, token: null, me: null, ws: null, state: null,
@@ -12,7 +19,7 @@ const app = {
   localStream: null, micOn: true, camOn: true,
   iceServers: [], peers: new Map(), remote: new Map(), pendingIce: new Map(),
   slots: [], layoutN: -1, lastFeedId: 0, boardKey: '', boardHand: 0, boardLen: 0,
-  deadline: null, turnTotal: null, settingsDirty: false, audioCtx: null,
+  deadline: null, turnTotal: null, lastTick: null, settingsDirty: false,
 };
 
 // ------------------------------------------------------------------ utils
@@ -48,23 +55,138 @@ async function api(path, body) {
   return data;
 }
 
-const cardHtml = (c, cls = '', i = 0) => Cards.html(c, cls, i);
+const cardHtml = (c, cls = '', i = 0, flip = false) => Cards.html(c, cls, i, flip);
 const BOT_LABELS = { fish: 'Fish', shark: 'Shark', maniac: 'Maniac' };
 
-function beep() {
-  try {
-    const ctx = app.audioCtx || (app.audioCtx = new AudioContext());
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.frequency.value = 880;
-    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.3);
-    osc.connect(gain).connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.35);
-  } catch {}
+// ------------------------------------------------------------------ preferences
+const DEFAULT_PREFS = { sfx: 70, voice: 100, ui: 100, motion: true }; // volumes and UI size are percentages
+const prefs = { ...DEFAULT_PREFS, ...(load(PREFS_KEY) || {}) };
+
+function applyPrefs() {
+  document.documentElement.style.setProperty('--ui-scale', prefs.ui / 100);
+  Sound.setVolume();
+  for (const slot of app.slots) slot.video.volume = prefs.voice / 100;
+  document.documentElement.classList.toggle('still', !prefs.motion);
+  for (const key of Object.keys(DEFAULT_PREFS)) {
+    const input = $(`#pref-${key}`);
+    if (input.type === 'checkbox') input.checked = prefs[key];
+    else {
+      input.value = prefs[key];
+      $(`#pref-${key}-out`).textContent = `${prefs[key]}%`;
+    }
+  }
 }
+
+// ------------------------------------------------------------------ sound
+// Every effect is synthesized with WebAudio and routed through one master gain (the volume setting).
+const Sound = (() => {
+  let ctx = null;
+  let master = null;
+  let noiseBuf = null;
+
+  function init() {
+    if (!ctx) {
+      try {
+        ctx = new AudioContext();
+        master = ctx.createGain();
+        master.connect(ctx.destination);
+        noiseBuf = ctx.createBuffer(1, ctx.sampleRate / 2, ctx.sampleRate);
+        const data = noiseBuf.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      } catch { ctx = null; return null; }
+      setVolume();
+    }
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    return ctx;
+  }
+
+  function setVolume() {
+    if (master) master.gain.value = (prefs.sfx / 100) ** 1.5;
+  }
+
+  function env(t, peak, attack, decay) {
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(peak, t + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + attack + decay);
+    g.connect(master);
+    return g;
+  }
+
+  function noise(t, { freq, q = 1, type = 'bandpass', peak, attack = 0.002, decay }) {
+    const src = ctx.createBufferSource();
+    src.buffer = noiseBuf;
+    const filter = ctx.createBiquadFilter();
+    filter.type = type;
+    filter.frequency.value = freq;
+    filter.Q.value = q;
+    src.connect(filter).connect(env(t, peak, attack, decay));
+    src.start(t, Math.random() * 0.3, attack + decay + 0.02);
+  }
+
+  function tone(t, { freq, slide, type = 'sine', peak, attack = 0.005, decay }) {
+    const osc = ctx.createOscillator();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t);
+    if (slide) osc.frequency.exponentialRampToValueAtTime(slide, t + attack + decay);
+    osc.connect(env(t, peak, attack, decay));
+    osc.start(t);
+    osc.stop(t + attack + decay + 0.02);
+  }
+
+  // One clay chip clacking against another: a bright click with a short ring.
+  function clack(t, level) {
+    noise(t, { freq: 3500 + Math.random() * 1500, q: 2.5, peak: 0.4 * level, decay: 0.03 });
+    tone(t, { freq: 2200 + Math.random() * 900, type: 'triangle', peak: 0.07 * level, attack: 0.002, decay: 0.06 });
+  }
+
+  const effects = {
+    // Knock knock: two knuckle raps on the rail.
+    check(t) {
+      for (const dt of [0, 0.16]) {
+        tone(t + dt, { freq: 190, slide: 85, peak: 0.7, attack: 0.003, decay: 0.13 });
+        noise(t + dt, { freq: 1100, q: 0.9, type: 'lowpass', peak: 0.6, decay: 0.05 });
+      }
+    },
+    // A short stack of chips pushed into the pot.
+    bet(t) {
+      [0, 0.045, 0.085, 0.13].forEach((dt, i) => clack(t + dt + Math.random() * 0.015, 1 - i * 0.15));
+    },
+    // A pile of chips raked in, with a bright chime on top.
+    win(t) {
+      for (let i = 0; i < 16; i++) clack(t + i * 0.04 + Math.random() * 0.03, 0.95 - i * 0.04);
+      [523.25, 659.25, 783.99, 1046.5].forEach((freq, i) =>
+        tone(t + 0.08 + i * 0.09, { freq, type: 'triangle', peak: 0.13, attack: 0.005, decay: 0.4 }));
+    },
+    // A card flicked across the felt.
+    deal(t) {
+      noise(t, { freq: 2400, q: 0.7, peak: 0.3, attack: 0.006, decay: 0.07 });
+    },
+    // A card snapped face up.
+    flip(t) {
+      noise(t, { freq: 4200, q: 1.4, peak: 0.22, attack: 0.002, decay: 0.035 });
+      tone(t, { freq: 620, slide: 900, type: 'triangle', peak: 0.05, attack: 0.002, decay: 0.05 });
+    },
+    turn(t) {
+      tone(t, { freq: 880, peak: 0.18, attack: 0.02, decay: 0.28 });
+    },
+    // The clock is running out.
+    tick(t) {
+      tone(t, { freq: 1320, type: 'square', peak: 0.06, attack: 0.002, decay: 0.05 });
+    },
+  };
+
+  function play(name, delayMs = 0) {
+    if (prefs.sfx <= 0 || !init()) return;
+    try { effects[name](ctx.currentTime + delayMs / 1000); } catch {}
+  }
+
+  return { init, play, setVolume };
+})();
+
+// Browsers only let audio start after the user interacts with the page.
+document.addEventListener('pointerdown', () => Sound.init());
+document.addEventListener('keydown', () => Sound.init());
 
 // ------------------------------------------------------------------ lobby
 function showRejoin() {
@@ -123,6 +245,7 @@ function initLobby() {
     small_blind: Number($('#host-sb').value),
     big_blind: Number($('#host-bb').value),
     starting_stack: Number($('#host-stack').value),
+    turn_time: Number($('#host-timer').value),
   }));
 
   $('#join-code').addEventListener('input', showRejoin);
@@ -161,7 +284,12 @@ function exitToLobby(forget = true) {
   app.lastFeedId = 0;
   app.boardKey = '';
   $('#feed').innerHTML = '';
-  for (const slot of app.slots) { slot.video.srcObject = null; slot.pid = null; slot.seat.classList.add('empty'); }
+  for (const slot of app.slots) {
+    slot.video.srcObject = null;
+    slot.pid = null;
+    slot.holeKey = '';
+    slot.seat.classList.add('empty');
+  }
   $('#conn-banner').hidden = true;
   $('#game').hidden = true;
   $('#lobby').hidden = false;
@@ -310,6 +438,7 @@ function updateVideos() {
     if (slot.video.srcObject !== stream) {
       slot.video.srcObject = stream;
       slot.video.muted = isMe || audioBlocked;
+      slot.video.volume = prefs.voice / 100;
       if (stream) {
         slot.video.play().catch(() => {
           // Browser blocked autoplay with sound: play muted until the user clicks.
@@ -400,22 +529,29 @@ function buildSeats() {
         <video autoplay playsinline></video>
         <div class="avatar"></div>
         <div class="badges"></div>
+        <div class="countdown"></div>
         <div class="timer"><div></div></div>
       </div>
+      <div class="blind-chip" hidden></div>
       <div class="plate"><div class="pname"></div><div class="pstack"></div></div>
+      <div class="hand-name"></div>
       <div class="hole"></div>`;
     const bet = document.createElement('div');
     bet.className = 'bet';
     const dealer = document.createElement('div');
     dealer.className = 'dealer-btn';
     dealer.textContent = 'D';
+    dealer.title = 'Dealer button';
     dealer.hidden = true;
     table.append(seat, bet, dealer);
+    const video = $('video', seat);
+    video.volume = prefs.voice / 100;
     app.slots.push({
-      seat, bet, dealer, pid: null, holeKey: '', avatarKey: '',
-      video: $('video', seat), avatar: $('.avatar', seat), badges: $('.badges', seat),
-      timer: $('.timer div', seat), name: $('.pname', seat), stack: $('.pstack', seat),
-      hole: $('.hole', seat), last: $('.last-action', seat),
+      seat, bet, dealer, video, pid: null, holeKey: '', avatarKey: '',
+      avatar: $('.avatar', seat), badges: $('.badges', seat),
+      timer: $('.timer div', seat), countdown: $('.countdown', seat),
+      name: $('.pname', seat), stack: $('.pstack', seat), handName: $('.hand-name', seat),
+      blind: $('.blind-chip', seat), hole: $('.hole', seat), last: $('.last-action', seat),
     });
   }
 }
@@ -445,8 +581,8 @@ function render(s) {
   const me = s.players.find(p => p.id === s.me);
   const isHost = s.host_id === s.me;
 
-  $('#blinds-info').textContent =
-    `Blinds ${fmt(s.settings.small_blind)}/${fmt(s.settings.big_blind)}` + (s.hand_no ? ` · Hand #${s.hand_no}` : '');
+  $('#blinds-info').innerHTML = `Blinds ${fmt(s.settings.small_blind)}/${fmt(s.settings.big_blind)}`
+    + (s.hand_no ? `<span class="hand-no">Hand #${s.hand_no}</span>` : '');
 
   const seated = [...s.players].sort((a, b) => a.seat - b.seat);
   const myIdx = Math.max(0, seated.findIndex(p => p.id === s.me));
@@ -456,9 +592,31 @@ function render(s) {
   const uncontested = s.results.length === 1 && !s.results[0].hand;
   if (uncontested) s.results[0].winners.forEach(id => winners.add(id));
   const winCards = new Set(s.results.flatMap(r => r.cards));
-  app.slots.forEach((slot, i) => renderSeat(slot, bySlot[i] || null, s, winners, winCards));
 
-  renderBoard(s, winCards);
+  const deck = $('#deck');
+  deck.hidden = !(inProgress(s) || s.phase === 'complete');
+  if (!deck.children.length) deck.innerHTML = [0, 1, 2].map(i => cardHtml('??', '', i)).join('');
+
+  // A new hand: shuffle, then deal hole cards one at a time, clockwise from the left of the button.
+  let deal = null;
+  if (prev && prev.hand_no !== s.hand_no && s.phase === 'preflop') {
+    const dealt = seated.filter(p => p.in_hand && p.cards.length);
+    const order = [...dealt.filter(p => p.seat > s.dealer_seat), ...dealt.filter(p => p.seat <= s.dealer_seat)];
+    const step = Math.min(140, DEAL_TIME / Math.max(1, order.length * 2));
+    deal = {
+      order: new Map(order.map((p, i) => [p.id, i])), n: order.length, step,
+      total: SHUFFLE_TIME + step * order.length * 2 + FLY_TIME,
+    };
+    deck.classList.remove('shuffle');
+    void deck.offsetWidth; // restart the shuffle animation
+    deck.classList.add('shuffle');
+  }
+  // Hold back your hand's name until the cards that change it have turned face up.
+  const newBoard = prev && prev.hand_no === s.hand_no ? s.board.length - prev.board.length : 0;
+  const nameDelay = deal ? deal.total + 380 : newBoard > 0 ? (newBoard - 1) * BOARD_STEP + FLY_TIME + 380 : 0;
+  app.slots.forEach((slot, i) => renderSeat(slot, bySlot[i] || null, s, winners, winCards, deal, nameDelay));
+
+  renderBoard(s, winCards, !prev);
   $('#pot').textContent = s.total_pot ? `Pot ${fmt(s.total_pot)}` : '';
   $('#banner').innerHTML = s.results
     .filter(r => r.label !== 'Returned')
@@ -470,13 +628,14 @@ function render(s) {
 
   const newTurn = !!s.actions && !(prev && prev.actions && prev.hand_no === s.hand_no && prev.phase === s.phase
     && prev.current_bet === s.current_bet);
-  if (newTurn) beep();
+  if (newTurn) Sound.play('turn', deal ? deal.total : 0);
   document.title = s.actions ? '▶ Your turn — Very Good Poker' : 'Very Good Poker';
 
   renderActions(s, newTurn);
   renderStatus(s, me, isHost);
   renderSidebar(s, me, isHost);
-  renderFeed(s.feed);
+  const sounds = renderFeed(s.feed);
+  if (prev) playFeedSounds(sounds);
 
   if (s.to_act && s.turn_remaining != null) {
     app.deadline = performance.now() + s.turn_remaining * 1000;
@@ -487,14 +646,16 @@ function render(s) {
   updateVideos();
 }
 
-function renderSeat(slot, p, s, winners, winCards) {
+function renderSeat(slot, p, s, winners, winCards, deal, nameDelay) {
   slot.pid = p ? p.id : null;
   slot.seat.classList.toggle('empty', !p);
   if (!p) {
     slot.bet.innerHTML = '';
     slot.dealer.hidden = true;
+    slot.blind.hidden = true;
     slot.hole.innerHTML = '';
     slot.holeKey = '';
+    slot.handName.textContent = '';
     return;
   }
   const cl = slot.seat.classList;
@@ -524,22 +685,66 @@ function renderSeat(slot, p, s, winners, winCards) {
   const badgeHtml = badges.join('');
   if (slot.badges.innerHTML !== badgeHtml) slot.badges.innerHTML = badgeHtml;
 
-  const holeKey = `${p.cards.join()}|${p.folded}|${winners.has(p.id) ? [...winCards].join() : ''}`;
-  if (holeKey !== slot.holeKey) {
-    const fresh = !slot.holeKey.startsWith(p.cards.join());
+  const cardsKey = `${s.hand_no}|${p.cards.join()}`;
+  const holeKey = `${cardsKey}|${p.folded}|${winners.has(p.id) ? [...winCards].join() : ''}`;
+  const dealIdx = deal ? deal.order.get(p.id) : undefined;
+  if (holeKey !== slot.holeKey || dealIdx !== undefined) {
+    // Cards turned face up mid-hand (a showdown) flip over where they sit.
+    const revealed = slot.holeKey.split('|')[0] === String(s.hand_no) && !slot.holeKey.startsWith(cardsKey);
     slot.holeKey = holeKey;
     slot.hole.classList.toggle('up', p.id !== s.me && p.cards.length > 0 && p.cards[0] !== '??');
     slot.hole.innerHTML = p.cards.map((c, i) => {
-      const cls = [p.folded ? 'dim' : '', winners.has(p.id) && winCards.has(c) ? 'win' : '', fresh ? 'deal' : ''];
-      return cardHtml(c, cls.join(' '), p.seat * 2 + i);
+      const cls = [p.folded ? 'dim' : '', winners.has(p.id) && winCards.has(c) ? 'win' : ''];
+      return cardHtml(c, cls.join(' '), p.seat * 2 + i, revealed || dealIdx !== undefined);
     }).join('');
+    if (dealIdx !== undefined) dealHole(slot, dealIdx, deal);
+    else if (revealed) Sound.play('flip');
   }
 
+  if (slot.handName.textContent !== (p.hand || '') || (deal && p.id === s.me)) {
+    slot.handName.textContent = p.hand || '';
+    slot.handName.classList.remove('late');
+    if (nameDelay && p.id === s.me) {
+      void slot.handName.offsetWidth; // restart the fade-in
+      slot.handName.style.setProperty('--name-delay', `${nameDelay}ms`);
+      slot.handName.classList.add('late');
+    }
+  }
+  slot.handName.title = p.hand ? `${p.id === s.me ? 'Your' : `${p.name}'s`} best hand` : '';
   slot.bet.innerHTML = p.bet > 0 ? `<span class="chip"></span>${fmt(p.bet)}` : '';
   slot.dealer.hidden = !s.hand_no || s.dealer_seat !== p.seat;
+  const blind = !s.hand_no ? '' : p.seat === s.sb_seat ? 'sb' : p.seat === s.bb_seat ? 'bb' : '';
+  slot.blind.hidden = !blind;
+  slot.blind.className = `blind-chip ${blind}`;
+  slot.blind.textContent = blind.toUpperCase();
+  slot.blind.title = blind === 'sb' ? 'Small blind' : blind === 'bb' ? 'Big blind' : '';
 }
 
-function renderBoard(s, winCards) {
+// Send a card flying from the deck to where it sits, starting after `delay` ms. A two-sided
+// card (.flip) then turns face up as it lands.
+function flyFromDeck(el, delay) {
+  const deck = $('#deck').getBoundingClientRect();
+  const from = deck.width ? deck : $('#table').getBoundingClientRect();
+  const fx = from.left + from.width / 2;
+  const fy = from.top + from.height * (deck.width ? 0.5 : 0.48);
+  el.style.setProperty('--flip-delay', `${delay + FLY_TIME}ms`);
+  // Measure before adding .deal, because the animation's first frame moves the card.
+  const r = el.getBoundingClientRect();
+  el.style.setProperty('--fx', `${fx - (r.left + r.width / 2)}px`);
+  el.style.setProperty('--fy', `${fy - (r.top + r.height / 2)}px`);
+  el.style.setProperty('--deal-delay', `${delay}ms`);
+  el.classList.add('deal');
+  Sound.play('deal', delay);
+  if (el.classList.contains('flip')) Sound.play('flip', delay + FLY_TIME);
+}
+
+// Card j for the k-th player dealt leaves the deck at shuffle + (j * players + k) * step.
+// Only your own cards are two-sided, so only they flip face up.
+function dealHole(slot, k, deal) {
+  $$('.card', slot.hole).forEach((el, j) => flyFromDeck(el, SHUFFLE_TIME + (j * deal.n + k) * deal.step));
+}
+
+function renderBoard(s, winCards, quiet) {
   const key = `${s.hand_no}|${s.board.join()}|${[...winCards].join()}`;
   if (key === app.boardKey) return;
   const sameHand = app.boardHand === s.hand_no;
@@ -547,10 +752,29 @@ function renderBoard(s, winCards) {
   app.boardKey = key;
   app.boardHand = s.hand_no;
   app.boardLen = s.board.length;
+  const fresh = i => !quiet && i >= oldLen;
   $('#board').innerHTML = s.board.map((c, i) => {
-    const cls = [i >= oldLen ? 'deal' : '', winCards.size && !winCards.has(c) ? 'dim' : '', winCards.has(c) ? 'win' : ''];
-    return cardHtml(c, cls.join(' '), i);
+    const cls = [winCards.size && !winCards.has(c) ? 'dim' : '', winCards.has(c) ? 'win' : ''];
+    return cardHtml(c, cls.join(' '), i, fresh(i));
   }).join('');
+  // New board cards slide out of the deck face down, one at a time, and flip over where they land.
+  $$('#board .card').forEach((el, i) => {
+    if (fresh(i)) flyFromDeck(el, (i - oldLen) * BOARD_STEP);
+  });
+}
+
+function playFeedSounds(sounds) {
+  let delay = 0;
+  let won = false;
+  for (const name of sounds) {
+    if (name === 'win') {
+      if (won) continue; // one rake for all the pots
+      won = true;
+      delay += 250;
+    }
+    Sound.play(name, delay);
+    delay += 220;
+  }
 }
 
 // ------------------------------------------------------------------ actions
@@ -628,7 +852,7 @@ function renderStatus(s, me, isHost) {
   const actor = s.players.find(p => p.id === s.to_act);
   const ready = s.players.filter(p => p.stack > 0 && !p.sitting_out && p.connected).length;
   let html;
-  if (s.actions) html = '<strong>Your turn</strong>';
+  if (s.actions) html = '<strong>Your turn</strong>' + (s.turn_remaining != null ? ' <span class="clock"></span>' : '');
   else if (actor && actor.is_bot) html = `<strong>${esc(actor.name)}</strong> is thinking…`;
   else if (actor) html = `Waiting for <strong>${esc(actor.name)}</strong>…`;
   else if (s.runout) html = 'All in! Running out the board…';
@@ -683,12 +907,15 @@ function renderSidebar(s, me, isHost) {
   }).join('');
 }
 
+// Appends new feed entries and returns the sound effects they call for, in order.
 function renderFeed(entries) {
   const feed = $('#feed');
   const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
+  const sounds = [];
   for (const e of entries) {
     if (e.id <= app.lastFeedId) continue;
     app.lastFeedId = e.id;
+    if (e.sound) sounds.push(e.sound);
     const div = document.createElement('div');
     div.className = e.kind;
     div.innerHTML = e.kind === 'chat' ? `<b>${esc(e.name)}:</b> ${esc(e.text)}` : esc(e.text);
@@ -696,6 +923,7 @@ function renderFeed(entries) {
   }
   while (feed.children.length > 300) feed.firstChild.remove();
   if (nearBottom) feed.scrollTop = feed.scrollHeight;
+  return sounds;
 }
 
 function initSidebar() {
@@ -734,6 +962,42 @@ function initSidebar() {
   });
 }
 
+function initSettings() {
+  const panel = $('#settings-panel');
+  const btn = $('#settings-btn');
+  const open = show => {
+    if (show) {
+      const r = btn.getBoundingClientRect();
+      panel.style.top = `${r.bottom + 8}px`;
+      panel.style.left = `${Math.max(12, r.left)}px`;
+    }
+    panel.hidden = !show;
+    btn.setAttribute('aria-expanded', String(show));
+  };
+  btn.addEventListener('click', () => open(panel.hidden));
+  document.addEventListener('pointerdown', e => {
+    if (!panel.hidden && !panel.contains(e.target) && !btn.contains(e.target)) open(false);
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !panel.hidden) open(false); });
+  for (const key of Object.keys(DEFAULT_PREFS)) {
+    $(`#pref-${key}`).addEventListener('input', e => {
+      prefs[key] = e.target.type === 'checkbox' ? e.target.checked : Number(e.target.value);
+      applyPrefs();
+      store(PREFS_KEY, prefs);
+    });
+  }
+  $('#pref-test').addEventListener('click', () => {
+    Sound.play('check');
+    Sound.play('bet', 600);
+    Sound.play('win', 1200);
+  });
+  $('#pref-reset').addEventListener('click', () => {
+    Object.assign(prefs, DEFAULT_PREFS);
+    store(PREFS_KEY, null);
+    applyPrefs();
+  });
+}
+
 function initTopbar() {
   $('#copy-link').addEventListener('click', () => {
     const link = `${location.origin}/poker?code=${app.code}`;
@@ -754,20 +1018,37 @@ function initTopbar() {
   });
 }
 
-// Turn timer bars.
+// Turn timer: a draining bar and seconds left on the acting seat, plus a ticking clock on your own turn.
 setInterval(() => {
   const s = app.state;
   for (const slot of app.slots) {
     let frac = 0;
+    let secs = '';
     if (s && app.deadline && slot.pid && slot.pid === s.to_act) {
-      frac = Math.max(0, (app.deadline - performance.now()) / (app.turnTotal * 1000));
+      const left = Math.max(0, (app.deadline - performance.now()) / 1000);
+      frac = left / app.turnTotal;
+      secs = Math.min(app.turnTotal, Math.ceil(left));
     }
+    const low = secs !== '' && (secs <= 5 || frac < 0.25);
     slot.timer.style.width = `${Math.min(1, frac) * 100}%`;
-    slot.timer.classList.toggle('low', frac > 0 && frac < 0.25);
+    slot.timer.classList.toggle('low', low);
+    if (slot.countdown.textContent !== String(secs)) slot.countdown.textContent = secs;
+    slot.countdown.classList.toggle('low', low);
+    if (slot.pid === app.me) {
+      const clock = $('#status .clock');
+      if (clock) {
+        clock.textContent = secs !== '' ? `· ${secs}s left` : '';
+        clock.classList.toggle('low', low);
+      }
+      if (secs !== '' && secs <= 5 && secs > 0 && secs !== app.lastTick) Sound.play('tick');
+      app.lastTick = secs;
+    }
   }
 }, 100);
 
+applyPrefs();
 initLobby();
 initActions();
 initSidebar();
 initTopbar();
+initSettings();

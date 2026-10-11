@@ -38,10 +38,11 @@
     </form>
 
     <form id="host-form" class="tab-panel" hidden>
-      <div class="row3">
+      <div class="row2">
         <label class="field">Small blind <input id="host-sb" type="number" min="1" value="5"></label>
         <label class="field">Big blind <input id="host-bb" type="number" min="1" value="10"></label>
         <label class="field">Starting stack <input id="host-stack" type="number" min="1" value="1000"></label>
+        <label class="field">Turn timer (sec, 0 = off) <input id="host-timer" type="number" min="0" max="600" value="30"></label>
       </div>
       <button class="btn primary wide" type="submit">Create lobby</button>
     </form>
@@ -54,6 +55,7 @@
 <!-- ============================== GAME ============================== -->
 <section id="game" class="screen" hidden>
   <header class="topbar">
+    <button id="settings-btn" class="btn icon-btn" title="Settings" aria-label="Settings" aria-expanded="false" aria-controls="settings-panel">&#9881;</button>
     <div class="brand"><span class="suit red">&hearts;</span> Very Good Poker</div>
     <div class="invite">
       Code <strong id="code" class="code-pill"></strong>
@@ -66,6 +68,27 @@
     <button id="leave-btn" class="btn small danger">Leave</button>
   </header>
 
+  <div id="settings-panel" class="settings-panel" role="dialog" aria-label="Settings" hidden>
+    <h3>Settings</h3>
+    <label class="pref">
+      <span>Game sounds <output id="pref-sfx-out"></output></span>
+      <input id="pref-sfx" type="range" min="0" max="100" step="5">
+    </label>
+    <label class="pref">
+      <span>Player voices <output id="pref-voice-out"></output></span>
+      <input id="pref-voice" type="range" min="0" max="100" step="5">
+    </label>
+    <label class="pref">
+      <span>UI size <output id="pref-ui-out"></output></span>
+      <input id="pref-ui" type="range" min="80" max="150" step="5">
+    </label>
+    <label class="check"><input id="pref-motion" type="checkbox"> Card animations</label>
+    <div class="pref-buttons">
+      <button id="pref-test" class="btn small" type="button">Test sounds</button>
+      <button id="pref-reset" class="btn small link" type="button">Reset</button>
+    </div>
+  </div>
+
   <div id="conn-banner" class="conn-banner" hidden>Reconnecting&hellip;</div>
 
   <main class="layout">
@@ -75,7 +98,10 @@
           <div class="felt"></div>
           <div class="center">
             <div id="pot" class="pot"></div>
-            <div id="board" class="board"></div>
+            <div class="board-row">
+              <div id="deck" class="deck" aria-hidden="true" hidden></div>
+              <div id="board" class="board"></div>
+            </div>
             <div id="banner" class="banner"></div>
           </div>
         </div>

@@ -6,7 +6,7 @@ import secrets
 from collections import deque
 from dataclasses import dataclass, field
 
-from .evaluator import RANKS, SUITS, best_hand, hand_name, pretty
+from .evaluator import RANKS, SUITS, best_hand, describe_hand, hand_name, pretty
 
 MAX_SEATS = 9
 BOT_STYLES = ("fish", "shark", "maniac")
@@ -107,9 +107,10 @@ class Table:
     def in_progress(self) -> bool:
         return self.phase in self.BETTING_PHASES
 
-    def log(self, text: str, kind: str = "log", name: str | None = None):
+    def log(self, text: str, kind: str = "log", name: str | None = None, sound: str | None = None):
+        """Add a feed entry. `sound` (check | bet | win) tells clients which effect to play."""
         self._feed_id += 1
-        self.feed.append({"id": self._feed_id, "kind": kind, "text": text, "name": name})
+        self.feed.append({"id": self._feed_id, "kind": kind, "text": text, "name": name, "sound": sound})
 
     def _sorted(self, players=None) -> list[Player]:
         return sorted(players if players is not None else self.players.values(), key=lambda p: p.seat)
@@ -416,11 +417,11 @@ class Table:
             if to_call > 0:
                 raise ActionError(f"You must call {to_call}, raise, or fold")
             p.last_action = "Check"
-            self.log(f"{p.name} checks")
+            self.log(f"{p.name} checks", sound="check")
         elif action == "call":
             self._commit(p, to_call)
             p.last_action = "All-in" if p.all_in else f"Call {to_call}"
-            self.log(f"{p.name} calls {to_call}" + (" (all-in)" if p.all_in else ""))
+            self.log(f"{p.name} calls {to_call}" + (" (all-in)" if p.all_in else ""), sound="bet")
         elif action == "raise":
             if not self._can_raise(p):
                 raise ActionError("You can't raise here")
@@ -451,7 +452,7 @@ class Table:
             self.current_bet = amount
             verb = "bets" if was_bet else "raises to"
             p.last_action = f"All-in {amount}" if p.all_in else f"{'Bet' if was_bet else 'Raise'} {amount}"
-            self.log(f"{p.name} {verb} {amount}" + (" (all-in)" if p.all_in else ""))
+            self.log(f"{p.name} {verb} {amount}" + (" (all-in)" if p.all_in else ""), sound="bet")
         else:
             raise ActionError("Unknown action")
 
@@ -488,7 +489,7 @@ class Table:
             "label": "Pot", "amount": pot, "winners": [winner.id],
             "names": [winner.name], "hand": None, "cards": [],
         }]
-        self.log(f"{winner.name} wins {pot}")
+        self.log(f"{winner.name} wins {pot}", sound="win")
         self._finish_hand()
 
     def build_pots(self) -> list[tuple[int, list[Player]]]:
@@ -549,7 +550,7 @@ class Table:
             else:
                 who = " and ".join(w.name for w in winners)
                 verb = "split" if len(winners) > 1 else "wins"
-                self.log(f"{who} {verb} {amount} with {hand}")
+                self.log(f"{who} {verb} {amount} with {hand}", sound="win")
         for p in live:
             if not any(p.id in r["winners"] for r in self.results):
                 self.log(f"{p.name} shows {pretty(p.hole[0])} {pretty(p.hole[1])}")
@@ -577,6 +578,8 @@ class Table:
                 cards = ["??", "??"]
             else:
                 cards = []
+            # Name the best hand for every hand this viewer can see (their own, or one shown down).
+            hand = describe_hand(cards + self.board) if p.live and cards and cards[0] != "??" else None
             players.append({
                 "id": p.id,
                 "name": p.name,
@@ -594,6 +597,7 @@ class Table:
                 "bot_style": p.bot_style,
                 "last_action": p.last_action,
                 "cards": cards,
+                "hand": hand,
                 "net": p.stack + (p.contributed if self.in_progress else 0) - p.buy_in,
                 "buy_in": p.buy_in,
             })

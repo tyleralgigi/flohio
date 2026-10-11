@@ -82,6 +82,15 @@ def best_hand(cards):
     return best
 
 
+def describe_hand(cards) -> str:
+    """Name the best hand a player can make from their hole cards plus the board so far."""
+    if len(cards) >= 5:
+        return hand_name(best_hand(cards)[0])
+    vals = sorted((rank_value(c) for c in cards), reverse=True)
+    pairs = [v for v, n in Counter(vals).items() if n >= 2]
+    return hand_name((1, max(pairs)) if pairs else (0, vals[0]))
+
+
 def hand_name(score: tuple) -> str:
     cat = score[0]
     one = lambda v: _RANK_WORDS[v][0]

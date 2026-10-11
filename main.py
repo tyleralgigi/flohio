@@ -32,6 +32,7 @@ EMPTY_ROOM_TTL = 30 * 60  # delete rooms nobody has been connected to for this l
 SHOWDOWN_PAUSE = 6
 FOLD_PAUSE = 3
 RUNOUT_STEP = 1.5
+DEAL_PAUSE = 2.0  # seconds the clients spend shuffling and dealing hole cards one at a time
 BOT_THINK = (0.8, 2.2)  # seconds a bot "thinks" before acting
 
 # Override with e.g. ICE_SERVERS='[{"urls":"turn:my.turn:3478","username":"u","credential":"p"}]'
@@ -97,10 +98,12 @@ class Room:
         now = time.time()
         key = (t.hand_no, t.seq)
         if key != self.turn_key:
+            # Give a fresh hand time to be dealt before the first player's clock starts.
+            dealing = DEAL_PAUSE if self.turn_key is None or key[0] != self.turn_key[0] else 0
             self.turn_key = key
-            self.turn_deadline = now + t.turn_time if (t.to_act and t.turn_time) else None
+            self.turn_deadline = now + dealing + t.turn_time if (t.to_act and t.turn_time) else None
             if t.to_act and t.players[t.to_act].is_bot:
-                self.bot_act_at = now + random.uniform(*BOT_THINK)
+                self.bot_act_at = now + dealing + random.uniform(*BOT_THINK)
             if t.runout:
                 self.runout_at = now + RUNOUT_STEP
             if t.phase == "complete":
@@ -241,6 +244,7 @@ class CreateRequest(BaseModel):
     small_blind: int = Field(ge=1, default=5)
     big_blind: int = Field(ge=1, default=10)
     starting_stack: int = Field(ge=1, default=1000)
+    turn_time: int = Field(ge=0, le=600, default=30)  # seconds, 0 = no limit
 
 
 class JoinRequest(BaseModel):
@@ -273,8 +277,11 @@ async def create_lobby(req: CreateRequest):
         raise HTTPException(400, "Big blind must be at least the small blind")
     if req.starting_stack < req.big_blind:
         raise HTTPException(400, "Starting stack must be at least one big blind")
+    if 0 < req.turn_time < 5:
+        raise HTTPException(400, "Turn timer must be 0 (off) or 5-600 seconds")
     code = _new_code()
     table = Table(code, req.small_blind, req.big_blind, req.starting_stack)
+    table.turn_time = req.turn_time
     player = table.add_player(req.name)
     rooms[code] = Room(table)
     return {"code": code, "token": player.token}

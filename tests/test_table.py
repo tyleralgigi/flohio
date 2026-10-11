@@ -2,7 +2,7 @@ import random
 
 import pytest
 
-from poker.evaluator import best_hand, hand_name, rank5
+from poker.evaluator import best_hand, describe_hand, hand_name, rank5
 from poker.table import ActionError, Table
 
 
@@ -55,6 +55,13 @@ def test_kickers_matter():
     assert rank5(["Ah", "Ad", "Ks", "4c", "3h"]) > rank5(["As", "Ac", "Qs", "Jc", "Th"])
 
 
+def test_describe_hand_preflop_and_with_board():
+    assert describe_hand(["Ah", "Ad"]) == "Pair of Aces"
+    assert describe_hand(["Kh", "7d"]) == "High Card, King"
+    assert describe_hand(["Kh", "7d", "Ks", "7c", "2h"]) == "Two Pair, Kings and Sevens"
+    assert describe_hand(["9h", "8h", "7h", "6h", "5h", "Ad"]) == "Straight Flush, Nine high"
+
+
 # ----------------------------------------------------------------- blinds & order
 def test_heads_up_dealer_posts_small_blind_and_acts_first():
     t, (a, b) = make_table([1000, 1000])
@@ -96,6 +103,27 @@ def test_button_moves():
     assert t.phase == "complete"
     t.start_hand()
     assert t.dealer_seat != first
+
+
+def test_view_names_only_hands_the_viewer_can_see():
+    t, (a, b, c) = make_table([1000, 1000, 1000])
+    t.start_hand()
+    view = {p["id"]: p for p in t.view(a.id)["players"]}
+    assert view[a.id]["hand"] == describe_hand(a.hole)
+    assert view[b.id]["hand"] is None and view[c.id]["hand"] is None
+    t.board = ["2c", "3c", "4c"]
+    assert {p["id"]: p for p in t.view(a.id)["players"]}[a.id]["hand"] == describe_hand(a.hole + t.board)
+
+
+def test_feed_tags_sounds_for_check_bet_and_win():
+    t, (a, b) = make_table([1000, 1000])
+    t.start_hand()
+    t.act(t.to_act, "call")
+    t.act(t.to_act, "check")
+    t.act(t.to_act, "raise", 20)
+    t.act(t.to_act, "fold")
+    sounds = [e["sound"] for e in t.feed if e["sound"]]
+    assert sounds == ["bet", "check", "bet", "win"]
 
 
 # ----------------------------------------------------------------- raising rules
