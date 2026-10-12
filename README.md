@@ -40,14 +40,20 @@ Every player sends their video to every other player, so this works best with up
 
 - Lobby codes, invite links, and reconnecting to your seat after a refresh or dropped connection
 - Full NLHE rules: heads-up blinds, minimum raises, short all-ins that don't reopen betting, side pots, split pots, and board runouts when everyone is all-in
-- Host controls: blinds (applied from the next hand), starting stack, rebuys, an adjustable turn timer (30 seconds by default, 0 turns it off) with a countdown on the acting player's seat, pause/resume, and removing players
+- Host controls: blinds (applied from the next hand), starting stack, rebuys, an adjustable turn timer (30 seconds by default, 0 turns it off) with a countdown on the acting player's seat, and removing players. The host deals every hand with a **Deal next hand** button, so the table can take a break between hands (if the host goes offline, anyone can deal)
 - Bots: the host can fill seats with computer players in three styles: **Fish** (easy, calls too much), **Shark** (solid, respects pot odds) and **Maniac** (bets big and bluffs often). Bots estimate their chances by simulating hundreds of random hands each turn. They only play while at least one person is at the table, and they automatically buy back in when rebuys are on.
 - Each player sees the best hand they can make with the board so far, under their seat. At showdown everyone sees every shown hand's name too
 - A deck sits on the felt next to the board. Each hand it shuffles, then hole cards fly out one at a time, starting left of the dealer button. Your own cards flip face up as they land. Flop, turn and river cards slide out face down and flip over in place, and shown-down hands flip over too. Clear D, SB and BB markers show who has the button and the blinds
 - Sound effects, all generated in the browser (no audio files): a knock-knock for a check, chips for a bet, a bigger chip rake and chime for winning a pot, card flicks and flips while dealing, and a clock tick in your last 5 seconds
-- A settings button (top left) for game sound volume, player voice volume, UI size and card animations, saved in your browser. The system "reduce motion" setting only stops the cards' idle sway. Dealing and flipping still play unless you turn off **Card animations**
+- A settings button (top left) for game sound volume, player voice volume, UI size and card & chip animations, saved in your browser. The system "reduce motion" setting only stops the cards' idle sway. Dealing, flipping and chip movement still play unless you turn off **Card & chip animations**
+- Going all in sets your camera ablaze: a red fire flickers around it until the hand is over (a steady red glow with **Card & chip animations** off)
+- Chips you can see: each bet slides out in front of the player as a pile that grows with its size, the bets are swept into a pot pile in the middle before the next card comes out, and the pot slides over to the winner
 - Balatro-inspired pixel-art cards, drawn as SVG in [static/cards.js](static/cards.js), that sway gently and bounce when they're part of the winning hand
-- Sit out, rebuy, a chip ledger (+/−), table chat and a hand log
+- **Check / Fold**: arm it while you wait and it checks for you whenever it's free, then folds the first time you face a bet (it lasts until the end of the hand, or until you turn it off)
+- Reactions: the 😂 button in the corner of the table opens a picker with two tabs, and everyone sees your pick:
+  - **Stickers** pop up over your seat. They're the images in [poker/stickers/](poker/stickers/) (PNG, GIF, WebP or JPEG). Drop more files in to add them; `6740-skull.gif` shows up as "skull"
+  - **Effects** play over your camera. They're the [Lottie](https://lottiefiles.com/) animations (`.json`) in [poker/effects/](poker/effects/); `Poker Chip Shuffle.json` shows up as "Poker Chip Shuffle"
+- Sit out, rebuy, a chip ledger (+/−), table chat and a hand log. The right-hand panels can be collapsed to a slim strip that counts unread chat
 - Mute your mic or turn your camera off at any time. A disconnected player's turn is checked or folded automatically after 20 seconds.
 
 ## Flohdle

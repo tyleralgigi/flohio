@@ -26,11 +26,13 @@ from poker.table import ActionError, Table
 from wordle import puzzle as wordle
 
 STATIC_DIR = Path(__file__).parent / "static"
+STICKER_DIR = Path(__file__).parent / "poker" / "stickers"  # drop images in here to add reactions
+STICKER_TYPES = {".png", ".gif", ".webp", ".jpg", ".jpeg"}
+EFFECT_DIR = Path(__file__).parent / "poker" / "effects"  # Lottie .json animations played over a player's camera
+REACTION_COOLDOWN = 1.0  # seconds between one player's reactions
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I confusion
 DISCONNECT_GRACE = 20  # seconds before a disconnected player's turn is auto-played
 EMPTY_ROOM_TTL = 30 * 60  # delete rooms nobody has been connected to for this long
-SHOWDOWN_PAUSE = 6
-FOLD_PAUSE = 3
 RUNOUT_STEP = 1.5
 DEAL_PAUSE = 2.0  # seconds the clients spend shuffling and dealing hole cards one at a time
 BOT_THINK = (0.8, 2.2)  # seconds a bot "thinks" before acting
@@ -39,6 +41,20 @@ BOT_THINK = (0.8, 2.2)  # seconds a bot "thinks" before acting
 ICE_SERVERS = json.loads(os.environ.get("ICE_SERVERS", "null")) or [
     {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}
 ]
+
+
+def _media(folder: Path, types: set[str]) -> list[str]:
+    if not folder.is_dir():
+        return []
+    return sorted(f.name for f in folder.iterdir() if f.is_file() and f.suffix.lower() in types)
+
+
+def stickers() -> list[str]:
+    return _media(STICKER_DIR, STICKER_TYPES)
+
+
+def effects() -> list[str]:
+    return _media(EFFECT_DIR, {".json"})
 
 
 class Room:
@@ -50,9 +66,9 @@ class Room:
         self.turn_key = None
         self.turn_deadline: float | None = None
         self.runout_at = 0.0
-        self.next_hand_at = 0.0
         self.bot_act_at = 0.0
         self.bot_busy = False
+        self.last_reaction: dict[str, float] = {}
         self.empty_since: float | None = time.time()
         self.ticker = asyncio.create_task(self._tick_loop())
 
@@ -106,9 +122,6 @@ class Room:
                 self.bot_act_at = now + dealing + random.uniform(*BOT_THINK)
             if t.runout:
                 self.runout_at = now + RUNOUT_STEP
-            if t.phase == "complete":
-                showdown = any(r["hand"] for r in t.results)
-                self.next_hand_at = now + (SHOWDOWN_PAUSE if showdown else FOLD_PAUSE)
         await self.push_state()
 
     async def _tick_loop(self):
@@ -136,9 +149,6 @@ class Room:
                         asyncio.create_task(self._bot_move((t.hand_no, t.seq)))
                     elif t.runout and now >= self.runout_at:
                         t.step_runout()
-                        await self.changed()
-                    elif t.can_start_hand() and now >= self.next_hand_at:
-                        t.start_hand()
                         await self.changed()
                 except Exception as exc:  # never let the ticker die
                     print(f"[{t.code}] ticker error: {exc!r}")
@@ -189,12 +199,8 @@ class Room:
             try:
                 if kind == "action":
                     t.act(pid, msg.get("action"), msg.get("amount", 0))
-                elif kind == "start":
-                    if not is_host:
-                        raise ActionError("Only the host can start the game")
-                    t.started = bool(msg.get("value", True))
-                    t.log("Game started" if t.started else "Game paused after this hand")
-                    self.next_hand_at = time.time() + 1
+                elif kind == "deal":
+                    t.deal(pid)
                 elif kind == "settings":
                     t.update_settings(pid, msg.get("settings") or {})
                 elif kind == "add_bot":
@@ -206,6 +212,19 @@ class Room:
                 elif kind == "media":
                     p.cam_on = bool(msg.get("cam"))
                     p.mic_on = bool(msg.get("mic"))
+                elif kind == "react":
+                    # Reactions are fleeting: broadcast them, but they're not part of the table state.
+                    # A reaction is either a sticker or an effect played over the sender's camera.
+                    key, allowed = ("effect", effects()) if "effect" in msg else ("sticker", stickers())
+                    name = msg.get(key)
+                    if name not in allowed:
+                        raise ActionError(f"Unknown {key}")
+                    now = time.time()
+                    if now - self.last_reaction.get(pid, 0) < REACTION_COOLDOWN:
+                        return
+                    self.last_reaction[pid] = now
+                    await self.broadcast({"type": "reaction", "id": pid, key: name})
+                    return
                 elif kind == "chat":
                     text = str(msg.get("text", "")).strip()[:300]
                     if not text:
@@ -237,6 +256,8 @@ class Room:
 rooms: dict[str, Room] = {}
 app = FastAPI(title="Very Good Poker")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/poker/stickers", StaticFiles(directory=STICKER_DIR, check_dir=False), name="stickers")
+app.mount("/poker/effects", StaticFiles(directory=EFFECT_DIR, check_dir=False), name="effects")
 
 
 class CreateRequest(BaseModel):
@@ -318,7 +339,10 @@ async def game_socket(websocket: WebSocket, code: str, token: str = ""):
         player.connected = True
         room.disconnected_at.pop(pid, None)
         peers = [other for other in room.conns if other != pid]
-        await websocket.send_json({"type": "welcome", "id": pid, "peers": peers, "ice_servers": ICE_SERVERS})
+        await websocket.send_json({
+            "type": "welcome", "id": pid, "peers": peers, "ice_servers": ICE_SERVERS,
+            "stickers": stickers(), "effects": effects(),
+        })
         if old is None:
             await room.broadcast({"type": "peer_joined", "id": pid}, exclude=pid)
             room.table.log(f"{player.name} connected")

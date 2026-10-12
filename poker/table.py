@@ -247,10 +247,30 @@ class Table:
         self.allow_rebuy = bool(data.get("allow_rebuy", self.allow_rebuy))
 
     # ------------------------------------------------------------------ hand flow
-    def can_start_hand(self) -> bool:
+    def _ready_to_deal(self) -> bool:
         # Bots don't play on their own: someone human has to be at the table.
         humans_here = any(p.connected and not p.is_bot for p in self.players.values())
-        return self.started and not self.in_progress and humans_here and len(self.eligible()) >= 2
+        return not self.in_progress and humans_here and len(self.eligible()) >= 2
+
+    def can_start_hand(self) -> bool:
+        return self.started and self._ready_to_deal()
+
+    def can_deal(self, pid: str) -> bool:
+        """The host deals every hand. If the host has dropped off, anyone at the table may."""
+        p = self.players.get(pid)
+        host = self.players.get(self.host_id)
+        may = pid == self.host_id or not (host and host.connected)
+        return bool(p) and not p.is_bot and may and self._ready_to_deal()
+
+    def deal(self, pid: str):
+        if not self.can_deal(pid):
+            if pid != self.host_id:
+                raise ActionError("Only the host can deal the next hand")
+            raise ActionError("Can't deal yet: need at least 2 players with chips and no hand in progress")
+        if not self.started:
+            self.started = True
+            self.log("Game started")
+        self.start_hand()
 
     def start_hand(self) -> bool:
         for p in self.players.values():
@@ -621,6 +641,7 @@ class Table:
             "players": players,
             "results": self.results if self.phase == "complete" else [],
             "actions": self.legal_actions(viewer_id),
+            "can_deal": self.can_deal(viewer_id),
             "settings": {
                 "small_blind": self.small_blind,
                 "big_blind": self.big_blind,

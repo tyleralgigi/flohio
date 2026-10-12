@@ -82,7 +82,7 @@
       <span>UI size <output id="pref-ui-out"></output></span>
       <input id="pref-ui" type="range" min="80" max="150" step="5">
     </label>
-    <label class="check"><input id="pref-motion" type="checkbox"> Card animations</label>
+    <label class="check"><input id="pref-motion" type="checkbox"> Card &amp; chip animations</label>
     <div class="pref-buttons">
       <button id="pref-test" class="btn small" type="button">Test sounds</button>
       <button id="pref-reset" class="btn small link" type="button">Reset</button>
@@ -97,18 +97,37 @@
         <div id="table" class="table">
           <div class="felt"></div>
           <div class="center">
-            <div id="pot" class="pot"></div>
             <div class="board-row">
               <div id="deck" class="deck" aria-hidden="true" hidden></div>
               <div id="board" class="board"></div>
+              <div id="pot" class="pot"></div>
             </div>
             <div id="banner" class="banner"></div>
           </div>
+        </div>
+        <div class="react">
+          <div id="react-picker" class="react-picker" role="dialog" aria-label="Reactions" hidden>
+            <div id="react-tabs" class="react-tabs" role="tablist">
+              <button id="tab-stickers" class="react-tab" role="tab" data-tab="stickers"
+                      aria-selected="true" aria-controls="sticker-grid">Stickers</button>
+              <button id="tab-effects" class="react-tab" role="tab" data-tab="effects"
+                      aria-selected="false" aria-controls="effect-grid" tabindex="-1">Effects</button>
+            </div>
+            <div id="sticker-grid" class="react-grid" role="tabpanel" aria-labelledby="tab-stickers"></div>
+            <div id="effect-grid" class="react-grid" role="tabpanel" aria-labelledby="tab-effects" hidden></div>
+          </div>
+          <button id="react-btn" class="btn react-btn" title="React" aria-label="React"
+                  aria-expanded="false" aria-controls="react-picker" hidden>&#128514;</button>
         </div>
       </div>
 
       <div class="action-bar">
         <div id="status" class="status"></div>
+        <button id="deal-btn" class="btn primary act deal-btn" hidden>Deal next hand</button>
+        <button id="checkfold-btn" class="btn pre-action" aria-pressed="false" hidden
+                title="Check whenever you can; fold as soon as someone bets or raises">
+          <span class="box" aria-hidden="true"></span> Check / Fold <span id="checkfold-next" class="next"></span>
+        </button>
         <div id="actions" class="actions" hidden>
           <div class="raise-controls" id="raise-controls">
             <div class="presets">
@@ -132,10 +151,14 @@
       </div>
     </div>
 
-    <aside class="sidebar">
+    <aside id="sidebar" class="sidebar">
+      <button id="sidebar-toggle" class="btn sidebar-toggle" aria-expanded="true" aria-controls="sidebar">
+        <span class="arrow" aria-hidden="true">&raquo;</span>
+        <span class="label">Hide panels</span>
+        <span id="unread" class="unread" hidden></span>
+      </button>
       <section id="host-panel" class="panel" hidden>
         <h3>Host controls</h3>
-        <button id="start-btn" class="btn primary wide">Start game</button>
         <form id="settings-form" class="settings">
           <label>Small blind <input name="small_blind" type="number" min="1"></label>
           <label>Big blind <input name="big_blind" type="number" min="1"></label>
@@ -183,6 +206,16 @@
 
 <div id="toast" class="toast" hidden></div>
 
+<!-- Warps the all-in fire's flames into flickering tongues (see .fire in style.css). -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <filter id="fire-warp" x="-20%" y="-30%" width="140%" height="160%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.035 0.07" numOctaves="2" seed="4">
+      <animate attributeName="baseFrequency" dur="1.8s" values="0.035 0.07;0.045 0.09;0.035 0.07" repeatCount="indefinite"/>
+    </feTurbulence>
+    <feDisplacementMap in="SourceGraphic" scale="16" xChannelSelector="R" yChannelSelector="G"/>
+  </filter>
+</svg>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"></script>
 <script src="/static/poker/cards.js"></script>
 <script src="/static/poker/app.js"></script>
 </body>

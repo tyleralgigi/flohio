@@ -5,6 +5,7 @@ const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 const SESSION_KEY = 'vgp.session';
 const NAME_KEY = 'vgp.name';
 const PREFS_KEY = 'vgp.prefs';
+const SIDEBAR_KEY = 'vgp.sidebar';
 const NUM_SLOTS = 9;
 // Dealing a hand: a quick shuffle, then every hole card within DEAL_TIME ms. The server's
 // DEAL_PAUSE covers all of it before anyone's clock starts.
@@ -12,6 +13,8 @@ const SHUFFLE_TIME = 400;
 const DEAL_TIME = 1100;
 const FLY_TIME = 380; // ms for a card to travel from the deck (roughly when it lands)
 const BOARD_STEP = 260; // ms between board cards
+const CHIP_TIME = 420; // ms for chips to slide across the felt
+const SWEEP_PAUSE = { showdown: 1500, fold: 600 }; // ms the pot sits before sliding to the winner
 
 const app = {
   code: null, token: null, me: null, ws: null, state: null,
@@ -20,6 +23,9 @@ const app = {
   iceServers: [], peers: new Map(), remote: new Map(), pendingIce: new Map(),
   slots: [], layoutN: -1, lastFeedId: 0, boardKey: '', boardHand: 0, boardLen: 0,
   deadline: null, turnTotal: null, lastTick: null, settingsDirty: false,
+  checkFold: null, autoActKey: null, unread: 0,
+  stickers: [], effects: [], effectThumbs: [], reactTab: 'stickers',
+  potKey: '', potToken: 0, potShown: 0,
 };
 
 // ------------------------------------------------------------------ utils
@@ -280,12 +286,24 @@ function exitToLobby(forget = true) {
   app.localStream = null;
   if (forget) store(SESSION_KEY, null);
   app.state = null;
+  openPicker(false);
   app.layoutN = -1;
   app.lastFeedId = 0;
   app.boardKey = '';
+  app.potKey = '';
+  app.potToken++;
+  showPot(0, 0, 1);
+  app.checkFold = null;
+  app.autoActKey = null;
+  app.unread = 0;
+  renderUnread();
   $('#feed').innerHTML = '';
   for (const slot of app.slots) {
     slot.video.srcObject = null;
+    stopEffect(slot);
+    showBet(slot, 0, 1);
+    slot.betPid = null;
+    slot.betToken++;
     slot.pid = null;
     slot.holeKey = '';
     slot.seat.classList.add('empty');
@@ -485,6 +503,11 @@ function onMessage(msg) {
       app.me = msg.id;
       app.iceServers = msg.ice_servers || [];
       msg.peers.forEach(id => callPeer(id));
+      buildPicker(msg.stickers || [], msg.effects || []);
+      break;
+    case 'reaction':
+      if (msg.effect) showEffect(msg.id, msg.effect);
+      else showSticker(msg.id, msg.sticker);
       break;
     case 'state':
       render(msg.state);
@@ -518,6 +541,26 @@ function onMessage(msg) {
 }
 
 // ------------------------------------------------------------------ table rendering
+// The fire around an all-in player: flames rising from the top edge and both sides of the
+// camera (warped by the #fire-warp filter in index.html), plus a few drifting embers.
+// Every seat gets its own random arrangement; it only animates while shown.
+function fireHtml() {
+  const rand = (a, b) => (a + Math.random() * (b - a)).toFixed(2);
+  const flame = (x, y, size) => `<i style="--x:${x}%;--y:${y}%;--s:${size}%;--d:${rand(0.8, 1.4)}s;`
+    + `--delay:${rand(-1.4, 0)}s;--drift:${rand(-25, 25)}%"></i>`;
+  const flames = [];
+  for (let i = 0; i < 20; i++) flames.push(flame(rand(-4, 104), rand(-2, 10), rand(24, 38))); // top edge
+  for (let i = 0; i < 12; i++) flames.push(flame(rand(-6, 4), rand(12, 100), rand(20, 32))); // left side
+  for (let i = 0; i < 12; i++) flames.push(flame(rand(96, 106), rand(12, 100), rand(20, 32))); // right side
+  const embers = [];
+  for (let i = 0; i < 7; i++) {
+    embers.push(`<i style="--x:${rand(-8, 104)}%;--d:${rand(1.6, 2.6)}s;--delay:${rand(-2.6, 0)}s;`
+      + `--drift:${rand(-300, 300)}%"></i>`);
+  }
+  return `<div class="fire" aria-hidden="true"><div class="flames">${flames.join('')}</div>`
+    + `<div class="embers">${embers.join('')}</div></div>`;
+}
+
 function buildSeats() {
   const table = $('#table');
   for (let i = 0; i < NUM_SLOTS; i++) {
@@ -532,6 +575,8 @@ function buildSeats() {
         <div class="countdown"></div>
         <div class="timer"><div></div></div>
       </div>
+      <div class="fx" aria-hidden="true"></div>
+      ${fireHtml()}
       <div class="blind-chip" hidden></div>
       <div class="plate"><div class="pname"></div><div class="pstack"></div></div>
       <div class="hand-name"></div>
@@ -552,6 +597,8 @@ function buildSeats() {
       timer: $('.timer div', seat), countdown: $('.countdown', seat),
       name: $('.pname', seat), stack: $('.pstack', seat), handName: $('.hand-name', seat),
       blind: $('.blind-chip', seat), hole: $('.hole', seat), last: $('.last-action', seat),
+      fx: $('.fx', seat), effect: null,
+      betPid: null, betTarget: 0, betShown: 0, betToken: 0,
     });
   }
 }
@@ -567,6 +614,8 @@ function layoutSlots(n) {
     slot.seat.style.top = `${50 + 41 * Math.sin(a)}%`;
     slot.bet.style.left = `${50 + 27 * Math.cos(a)}%`;
     slot.bet.style.top = `${49 + 21 * Math.sin(a)}%`;
+    // Bets near the top seats hang their chips below the label, clear of the seat.
+    slot.bet.classList.toggle('far', Math.sin(a) < -0.3);
     slot.dealer.style.left = `${50 + 31 * Math.cos(b)}%`;
     slot.dealer.style.top = `${48 + 29 * Math.sin(b)}%`;
   });
@@ -613,11 +662,13 @@ function render(s) {
   }
   // Hold back your hand's name until the cards that change it have turned face up.
   const newBoard = prev && prev.hand_no === s.hand_no ? s.board.length - prev.board.length : 0;
-  const nameDelay = deal ? deal.total + 380 : newBoard > 0 ? (newBoard - 1) * BOARD_STEP + FLY_TIME + 380 : 0;
+  const sweep = sweepTime(prev, s);
+  const nameDelay = deal ? deal.total + 380
+    : newBoard > 0 ? sweep + (newBoard - 1) * BOARD_STEP + FLY_TIME + 380 : 0;
   app.slots.forEach((slot, i) => renderSeat(slot, bySlot[i] || null, s, winners, winCards, deal, nameDelay));
 
-  renderBoard(s, winCards, !prev);
-  $('#pot').textContent = s.total_pot ? `Pot ${fmt(s.total_pot)}` : '';
+  renderChips(s, prev, sweep);
+  renderBoard(s, winCards, !prev, sweep);
   $('#banner').innerHTML = s.results
     .filter(r => r.label !== 'Returned')
     .map(r => {
@@ -626,15 +677,17 @@ function render(s) {
       return `<div>${multi ? esc(r.label) + ': ' : ''}${who} ${r.names.length > 1 ? 'split' : 'wins'} ${fmt(r.amount)}${r.hand ? ' — ' + esc(r.hand) : ''}</div>`;
     }).join('');
 
-  const newTurn = !!s.actions && !(prev && prev.actions && prev.hand_no === s.hand_no && prev.phase === s.phase
-    && prev.current_bet === s.current_bet);
+  const autoActing = autoCheckFold(s);
+  const newTurn = !!s.actions && !autoActing && !(prev && prev.actions && prev.hand_no === s.hand_no
+    && prev.phase === s.phase && prev.current_bet === s.current_bet);
   if (newTurn) Sound.play('turn', deal ? deal.total : 0);
-  document.title = s.actions ? '▶ Your turn — Very Good Poker' : 'Very Good Poker';
+  document.title = s.actions && !autoActing ? '▶ Your turn — Very Good Poker' : 'Very Good Poker';
 
-  renderActions(s, newTurn);
-  renderStatus(s, me, isHost);
+  renderActions(s, newTurn, autoActing);
+  renderPreAction(s, me);
+  renderStatus(s, me, isHost, autoActing);
   renderSidebar(s, me, isHost);
-  const sounds = renderFeed(s.feed);
+  const sounds = renderFeed(s.feed, !prev);
   if (prev) playFeedSounds(sounds);
 
   if (s.to_act && s.turn_remaining != null) {
@@ -650,7 +703,6 @@ function renderSeat(slot, p, s, winners, winCards, deal, nameDelay) {
   slot.pid = p ? p.id : null;
   slot.seat.classList.toggle('empty', !p);
   if (!p) {
-    slot.bet.innerHTML = '';
     slot.dealer.hidden = true;
     slot.blind.hidden = true;
     slot.hole.innerHTML = '';
@@ -664,6 +716,7 @@ function renderSeat(slot, p, s, winners, winCards, deal, nameDelay) {
   cl.toggle('folded', p.in_hand && p.folded && inProgress(s));
   cl.toggle('away', p.sitting_out || !p.connected);
   cl.toggle('winner', winners.has(p.id));
+  cl.toggle('all-in', p.in_hand && p.all_in && !p.folded);
 
   slot.name.textContent = (p.id === s.host_id ? '★ ' : '') + p.name;
   slot.stack.textContent = p.all_in && inProgress(s) ? 'ALL-IN' : fmt(p.stack);
@@ -711,7 +764,6 @@ function renderSeat(slot, p, s, winners, winCards, deal, nameDelay) {
     }
   }
   slot.handName.title = p.hand ? `${p.id === s.me ? 'Your' : `${p.name}'s`} best hand` : '';
-  slot.bet.innerHTML = p.bet > 0 ? `<span class="chip"></span>${fmt(p.bet)}` : '';
   slot.dealer.hidden = !s.hand_no || s.dealer_seat !== p.seat;
   const blind = !s.hand_no ? '' : p.seat === s.sb_seat ? 'sb' : p.seat === s.bb_seat ? 'bb' : '';
   slot.blind.hidden = !blind;
@@ -744,7 +796,7 @@ function dealHole(slot, k, deal) {
   $$('.card', slot.hole).forEach((el, j) => flyFromDeck(el, SHUFFLE_TIME + (j * deal.n + k) * deal.step));
 }
 
-function renderBoard(s, winCards, quiet) {
+function renderBoard(s, winCards, quiet, delay = 0) {
   const key = `${s.hand_no}|${s.board.join()}|${[...winCards].join()}`;
   if (key === app.boardKey) return;
   const sameHand = app.boardHand === s.hand_no;
@@ -759,7 +811,7 @@ function renderBoard(s, winCards, quiet) {
   }).join('');
   // New board cards slide out of the deck face down, one at a time, and flip over where they land.
   $$('#board .card').forEach((el, i) => {
-    if (fresh(i)) flyFromDeck(el, (i - oldLen) * BOARD_STEP);
+    if (fresh(i)) flyFromDeck(el, delay + (i - oldLen) * BOARD_STEP);
   });
 }
 
@@ -775,6 +827,131 @@ function playFeedSounds(sounds) {
     Sound.play(name, delay);
     delay += 220;
   }
+}
+
+// ------------------------------------------------------------------ chips
+// Bets and the pot are piles of chips that grow with what they're worth in big blinds: a few
+// chips for a blind, a few dozen for a big pot. Columns get taller, then there are more of them,
+// and the bigger the pile the pricier the colours at its front.
+const CHIP_COLORS = ['red', 'green', 'black', 'purple', 'gold'];
+const CHIPS_PER_COLUMN = 7;
+const MAX_CHIPS = 42;
+
+function chipPileHtml(amount, bb) {
+  if (!(amount > 0)) return '';
+  const v = amount / Math.max(1, bb);
+  const n = Math.min(MAX_CHIPS, Math.max(1, Math.ceil(3 * Math.log2(1 + 2 * v))));
+  const tier = v < 3 ? 0 : v < 15 ? 1 : v < 60 ? 2 : v < 250 ? 3 : 4;
+  const cols = [];
+  for (let left = n, i = 0; left > 0; left -= CHIPS_PER_COLUMN, i++) {
+    const color = CHIP_COLORS[Math.max(0, tier - i)];
+    cols.push(`<span class="chip-col ${color}">${'<i></i>'.repeat(Math.min(left, CHIPS_PER_COLUMN))}</span>`);
+  }
+  return `<span class="chips" aria-hidden="true">${cols.join('')}</span>`;
+}
+
+function showBet(slot, amount, bb) {
+  slot.betShown = amount;
+  slot.bet.innerHTML = amount > 0 ? `${chipPileHtml(amount, bb)}<span class="amt">${fmt(amount)}</span>` : '';
+}
+
+// The pile is the chips already in the middle; the label counts the bets still out in front too.
+function showPot(pile, label, bb) {
+  app.potShown = pile;
+  $('#pot').innerHTML = label > 0 ? `${chipPileHtml(pile, bb)}<span class="amt">Pot ${fmt(label)}</span>` : '';
+}
+
+// Where chips leave from or land (a flying pile is placed by its base): the middle of a seat,
+// the base of the pile already on a bet or the pot, or where that pile's base will be.
+function chipPoint(el, table) {
+  const pile = $('.chips', el);
+  const r = (pile || el).getBoundingClientRect();
+  let y = r.top + r.height / 2;
+  if (pile) y = r.bottom;
+  else if (el.classList.contains('far')) y = r.bottom + table.width * 0.03 * prefs.ui / 100;
+  else if (!el.classList.contains('seat')) y = r.top;
+  return { x: r.left + r.width / 2 - table.left, y: y - table.top };
+}
+
+// Slide a pile worth `amount` across the table from one element to another.
+function flyChips(amount, bb, from, to, delay = 0) {
+  const table = $('#table');
+  const t = table.getBoundingClientRect();
+  const a = chipPoint(from, t);
+  const b = chipPoint(to, t);
+  const el = document.createElement('div');
+  el.className = 'chip-flight';
+  el.innerHTML = chipPileHtml(amount, bb);
+  el.style.left = `${a.x}px`;
+  el.style.top = `${a.y}px`;
+  table.append(el);
+  const done = () => el.remove();
+  el.animate([
+    { translate: '0 0', opacity: 0 },
+    { opacity: 1, offset: 0.15 },
+    { translate: `${b.x - a.x}px ${b.y - a.y}px`, opacity: 1 },
+  ], { duration: CHIP_TIME, delay, easing: 'cubic-bezier(.3, .6, .35, 1)', fill: 'backwards' }).finished.then(done, done);
+}
+
+// How long new board cards wait while this update's bets are swept into the pot.
+function sweepTime(prev, s) {
+  if (!prev || !prefs.motion || prev.hand_no !== s.hand_no) return 0;
+  const bets = new Map(s.players.map(p => [p.id, p.bet]));
+  return prev.players.some(p => p.bet > (bets.get(p.id) || 0)) ? CHIP_TIME : 0;
+}
+
+// Chips follow the betting: each bet slides from the player to the felt in front of them, the
+// bets are swept into the pot when the street ends (`sweep` ms, before the next card comes out),
+// and once the hand is over the pot slides across to whoever won it.
+function renderChips(s, prev, sweep) {
+  const bb = s.settings.big_blind;
+  const animate = !!prev && prefs.motion;
+  const byId = new Map(s.players.map(p => [p.id, p]));
+  for (const slot of app.slots) {
+    const amount = slot.pid ? byId.get(slot.pid).bet : 0;
+    if (!animate || slot.betPid !== slot.pid) {
+      slot.betPid = slot.pid;
+      slot.betTarget = amount;
+      slot.betToken++;
+      showBet(slot, amount, bb);
+      continue;
+    }
+    if (amount === slot.betTarget) continue;
+    const token = ++slot.betToken;
+    if (amount > slot.betTarget) {
+      flyChips(amount - slot.betTarget, bb, slot.seat, slot.bet);
+      setTimeout(() => { if (slot.betToken === token) showBet(slot, amount, bb); }, CHIP_TIME);
+    } else {
+      flyChips(slot.betTarget, bb, slot.bet, $('#pot'));
+      showBet(slot, amount, bb);
+    }
+    slot.betTarget = amount;
+  }
+
+  const won = s.phase === 'complete' ? s.results : [];
+  const pile = won.length ? won.reduce((t, r) => t + r.amount, 0) : s.pot;
+  const label = won.length ? pile : s.total_pot;
+  const key = `${s.hand_no}|${pile}|${label}|${won.length}`;
+  if (key === app.potKey) return;
+  app.potKey = key;
+  const token = ++app.potToken;
+  if (!animate) {
+    showPot(won.length ? 0 : pile, won.length ? 0 : label, bb);
+    return;
+  }
+  const later = (ms, fn) => setTimeout(() => { if (app.potToken === token) fn(); }, ms);
+  showPot(app.potShown, label, bb);
+  later(sweep, () => showPot(pile, label, bb));
+  if (!won.length) return;
+  later(sweep + (won.some(r => r.hand) ? SWEEP_PAUSE.showdown : SWEEP_PAUSE.fold), () => {
+    for (const r of won) {
+      for (const id of r.winners) {
+        const slot = app.slots.find(x => x.pid === id);
+        if (slot) flyChips(Math.floor(r.amount / r.winners.length), bb, $('#pot'), slot.seat);
+      }
+    }
+    showPot(0, 0, bb);
+  });
 }
 
 // ------------------------------------------------------------------ actions
@@ -794,10 +971,10 @@ function updateRaiseLabel(v) {
   $('#raise-btn').textContent = `${verb} ${fmt(v)}`;
 }
 
-function renderActions(s, newTurn) {
+function renderActions(s, newTurn, autoActing) {
   const a = s.actions;
-  $('#actions').hidden = !a;
-  if (!a) return;
+  $('#actions').hidden = !a || autoActing;
+  if (!a || autoActing) return;
   $$('#actions button').forEach(b => { b.disabled = false; });
   $('#call-btn').textContent = a.can_check ? 'Check' : (a.to_call >= (s.players.find(p => p.id === s.me) || {}).stack
     ? `Call all-in ${fmt(a.to_call)}` : `Call ${fmt(a.to_call)}`);
@@ -820,8 +997,46 @@ function act(action, amount) {
   send({ type: 'action', action, amount });
 }
 
+// Check / Fold pre-action: once armed it lasts the rest of the hand, checking whenever that's
+// free and folding the first time you face a bet. Returns true while it's playing your turn.
+function autoCheckFold(s) {
+  if (app.checkFold !== s.hand_no || !s.actions) return false;
+  // One action per decision point, however many state pushes arrive before the server moves on.
+  const key = `${s.hand_no}|${s.phase}|${s.current_bet}`;
+  if (app.autoActKey !== key) {
+    app.autoActKey = key;
+    send({ type: 'action', action: s.actions.can_check ? 'check' : 'fold' });
+  }
+  return true;
+}
+
+function renderPreAction(s, me) {
+  const btn = $('#checkfold-btn');
+  const canArm = !!me && me.in_hand && !me.folded && !me.all_in && inProgress(s) && !s.runout;
+  btn.hidden = !canArm || (!!s.actions && app.checkFold !== s.hand_no);
+  if (btn.hidden) return;
+  const armed = app.checkFold === s.hand_no;
+  btn.setAttribute('aria-pressed', String(armed));
+  $('#checkfold-next').textContent = armed ? `· will ${me.bet >= s.current_bet ? 'check' : 'fold'}` : '';
+}
+
 function initActions() {
   $('#fold-btn').addEventListener('click', () => act('fold'));
+  $('#checkfold-btn').addEventListener('click', () => {
+    const s = app.state;
+    if (!s) return;
+    app.checkFold = app.checkFold === s.hand_no ? null : s.hand_no;
+    app.autoActKey = null;
+    const me = s.players.find(p => p.id === s.me);
+    const autoActing = autoCheckFold(s);
+    renderActions(s, false, autoActing);
+    renderPreAction(s, me);
+    renderStatus(s, me, s.host_id === s.me, autoActing);
+  });
+  $('#deal-btn').addEventListener('click', e => {
+    e.currentTarget.disabled = true;
+    send({ type: 'deal' });
+  });
   $('#call-btn').addEventListener('click', () => act(app.state.actions.can_check ? 'check' : 'call'));
   $('#raise-btn').addEventListener('click', () => {
     setRaise($('#raise-input').value);
@@ -848,11 +1063,13 @@ function initActions() {
 }
 
 // ------------------------------------------------------------------ status, sidebar, feed
-function renderStatus(s, me, isHost) {
+function renderStatus(s, me, isHost, autoActing) {
   const actor = s.players.find(p => p.id === s.to_act);
+  const host = s.players.find(p => p.id === s.host_id);
   const ready = s.players.filter(p => p.stack > 0 && !p.sitting_out && p.connected).length;
   let html;
-  if (s.actions) html = '<strong>Your turn</strong>' + (s.turn_remaining != null ? ' <span class="clock"></span>' : '');
+  if (autoActing) html = s.actions.can_check ? 'Checking…' : 'Folding…';
+  else if (s.actions) html = '<strong>Your turn</strong>' + (s.turn_remaining != null ? ' <span class="clock"></span>' : '');
   else if (actor && actor.is_bot) html = `<strong>${esc(actor.name)}</strong> is thinking…`;
   else if (actor) html = `Waiting for <strong>${esc(actor.name)}</strong>…`;
   else if (s.runout) html = 'All in! Running out the board…';
@@ -861,7 +1078,13 @@ function renderStatus(s, me, isHost) {
       ? `Share code <strong>${esc(s.code)}</strong> with friends, then press <strong>Start game</strong>.`
       : 'Waiting for the host to start the game…';
   } else if (ready < 2) html = 'Waiting for at least 2 players with chips…';
-  else html = 'Next hand starting…';
+  else if (isHost) html = 'Deal the next hand when everyone\'s ready.';
+  else if (s.can_deal) html = 'The host is offline — anyone can deal the next hand.';
+  else html = `Waiting for <strong>${esc(host ? host.name : 'the host')}</strong> to deal the next hand…`;
+  const deal = $('#deal-btn');
+  deal.hidden = !s.can_deal;
+  deal.disabled = false;
+  deal.textContent = s.hand_no ? 'Deal next hand' : 'Start game';
   if (me && me.stack === 0 && !inProgress(s)) {
     html += s.settings.allow_rebuy ? ' · You\'re out of chips — hit <strong>Rebuy</strong>.' : ' · You\'re out of chips.';
   } else if (me && me.sitting_out) {
@@ -873,9 +1096,6 @@ function renderStatus(s, me, isHost) {
 function renderSidebar(s, me, isHost) {
   $('#host-panel').hidden = !isHost;
   if (isHost) {
-    const btn = $('#start-btn');
-    btn.textContent = s.started ? 'Pause after this hand' : 'Start game';
-    btn.classList.toggle('primary', !s.started);
     const form = $('#settings-form');
     if (!app.settingsDirty) {
       for (const [key, val] of Object.entries(s.settings)) {
@@ -908,7 +1128,8 @@ function renderSidebar(s, me, isHost) {
 }
 
 // Appends new feed entries and returns the sound effects they call for, in order.
-function renderFeed(entries) {
+// Chat that arrives while the sidebar is collapsed counts as unread (except on first load).
+function renderFeed(entries, initial) {
   const feed = $('#feed');
   const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
   const sounds = [];
@@ -916,6 +1137,7 @@ function renderFeed(entries) {
     if (e.id <= app.lastFeedId) continue;
     app.lastFeedId = e.id;
     if (e.sound) sounds.push(e.sound);
+    if (e.kind === 'chat' && !initial && sidebarCollapsed()) app.unread++;
     const div = document.createElement('div');
     div.className = e.kind;
     div.innerHTML = e.kind === 'chat' ? `<b>${esc(e.name)}:</b> ${esc(e.text)}` : esc(e.text);
@@ -923,11 +1145,37 @@ function renderFeed(entries) {
   }
   while (feed.children.length > 300) feed.firstChild.remove();
   if (nearBottom) feed.scrollTop = feed.scrollHeight;
+  renderUnread();
   return sounds;
 }
 
+const sidebarCollapsed = () => $('.layout').classList.contains('collapsed');
+
+function renderUnread() {
+  const el = $('#unread');
+  el.hidden = !app.unread;
+  el.textContent = app.unread > 9 ? '9+' : app.unread;
+  el.title = `${app.unread} new message${app.unread === 1 ? '' : 's'}`;
+}
+
+function setSidebar(collapsed) {
+  $('.layout').classList.toggle('collapsed', collapsed);
+  const btn = $('#sidebar-toggle');
+  btn.setAttribute('aria-expanded', String(!collapsed));
+  btn.title = collapsed ? 'Show players, chat and controls' : 'Hide the side panels';
+  $('.arrow', btn).textContent = collapsed ? '«' : '»';
+  $('.label', btn).textContent = collapsed ? 'Show panels' : 'Hide panels';
+  store(SIDEBAR_KEY, collapsed || null);
+  if (!collapsed) {
+    app.unread = 0;
+    renderUnread();
+    $('#feed').scrollTop = $('#feed').scrollHeight; // it can't scroll while hidden
+  }
+}
+
 function initSidebar() {
-  $('#start-btn').addEventListener('click', () => send({ type: 'start', value: !app.state.started }));
+  setSidebar(!!load(SIDEBAR_KEY));
+  $('#sidebar-toggle').addEventListener('click', () => setSidebar(!sidebarCollapsed()));
   const form = $('#settings-form');
   form.addEventListener('input', () => { app.settingsDirty = true; });
   form.addEventListener('submit', e => {
@@ -998,6 +1246,156 @@ function initSettings() {
   });
 }
 
+// ------------------------------------------------------------------ reactions
+// Stickers are the image files in poker/stickers and pop up beside the sender's camera.
+// Effects are the Lottie animations in poker/effects and play over the sender's camera.
+// "6740-skull.gif" is labelled "skull", "Poker Chip Shuffle.json" "Poker Chip Shuffle".
+const stickerUrl = name => `/poker/stickers/${encodeURIComponent(name)}`;
+const reactionLabel = name => name.replace(/\.[^.]+$/, '').replace(/^\d+-/, '').replace(/[-_]+/g, ' ');
+const hasLottie = () => typeof lottie !== 'undefined'; // it comes from a CDN, so it may be missing
+// Some animations leave a lot of empty canvas around the action; zoom those in to fill the camera.
+const EFFECT_ZOOM = { 'Confetti.json': 1.7 };
+
+// Each effect is fetched once. Lottie writes into the data it plays, so every animation
+// gets its own parsed copy.
+const effectJson = new Map();
+function effectData(name) {
+  if (!effectJson.has(name)) {
+    const req = fetch(`/poker/effects/${encodeURIComponent(name)}`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); });
+    req.catch(() => effectJson.delete(name)); // try again next time
+    effectJson.set(name, req);
+  }
+  return effectJson.get(name).then(JSON.parse);
+}
+
+function buildPicker(stickers, effects) {
+  if (!hasLottie()) effects = [];
+  if (stickers.join() === app.stickers.join() && effects.join() === app.effects.join()) return;
+  app.stickers = stickers;
+  app.effects = effects;
+  app.effectThumbs.forEach(a => a.destroy());
+  app.effectThumbs = [];
+  $('#react-btn').hidden = !stickers.length && !effects.length;
+  $('#react-tabs').hidden = !stickers.length || !effects.length; // no tabs for a single kind
+  const tile = (attr, name, inner) => {
+    const label = esc(reactionLabel(name));
+    return `<button class="react-item" ${attr}="${esc(name)}" title="${label}" aria-label="${label}">${inner}</button>`;
+  };
+  $('#sticker-grid').innerHTML = stickers
+    .map(name => tile('data-sticker', name, `<img src="${esc(stickerUrl(name))}" alt="" loading="lazy">`)).join('');
+  $('#effect-grid').innerHTML = effects.map(name => tile('data-effect', name, '<div class="fx-thumb"></div>')).join('');
+  showTab(app.reactTab);
+}
+
+function showTab(tab) {
+  if (!app.effects.length) tab = 'stickers';
+  else if (!app.stickers.length) tab = 'effects';
+  app.reactTab = tab;
+  for (const t of $$('#react-tabs [role=tab]')) {
+    const on = t.dataset.tab === tab;
+    t.setAttribute('aria-selected', String(on));
+    t.tabIndex = on ? 0 : -1;
+  }
+  $('#sticker-grid').hidden = tab !== 'stickers';
+  $('#effect-grid').hidden = tab !== 'effects';
+  if (tab === 'effects' && !$('#react-picker').hidden) loadEffectThumbs();
+}
+
+// Effect tiles show a still from the middle of the animation and play it on hover.
+// They're only built once someone opens the Effects tab.
+function loadEffectThumbs() {
+  for (const b of $$('#effect-grid [data-effect]')) {
+    if (b.dataset.thumb) continue;
+    b.dataset.thumb = 'loading';
+    effectData(b.dataset.effect).then(data => {
+      if (!b.isConnected) return;
+      const anim = lottie.loadAnimation({
+        container: $('.fx-thumb', b), renderer: 'svg', loop: true, autoplay: false, animationData: data,
+      });
+      app.effectThumbs.push(anim);
+      const still = () => anim.goToAndStop(Math.floor(anim.totalFrames / 2), true);
+      if (anim.isLoaded) still(); else anim.addEventListener('DOMLoaded', still);
+      b.addEventListener('pointerenter', () => anim.play());
+      b.addEventListener('pointerleave', still);
+      b.dataset.thumb = 'ready';
+    }).catch(() => { delete b.dataset.thumb; });
+  }
+}
+
+function openPicker(show) {
+  $('#react-picker').hidden = !show;
+  $('#react-btn').setAttribute('aria-expanded', String(show));
+  if (show) showTab(app.reactTab);
+}
+
+// Pop the sticker up over the sender's seat for a few seconds.
+function showSticker(pid, name) {
+  const slot = app.slots.find(s => s.pid === pid);
+  if (!slot || !app.stickers.includes(name)) return;
+  const old = $('.reaction', slot.seat);
+  if (old) old.remove();
+  const img = document.createElement('img');
+  img.className = 'reaction';
+  img.src = stickerUrl(name);
+  img.alt = reactionLabel(name);
+  img.addEventListener('animationend', () => img.remove());
+  slot.seat.append(img);
+}
+
+// Play the effect once over the sender's camera, replacing any effect already playing there.
+function showEffect(pid, name) {
+  if (!app.effects.includes(name)) return;
+  effectData(name).then(data => {
+    const slot = app.slots.find(s => s.pid === pid);
+    if (!slot) return;
+    stopEffect(slot);
+    slot.fx.style.setProperty('--fx-zoom', EFFECT_ZOOM[name] || 1);
+    const anim = lottie.loadAnimation({
+      container: slot.fx, renderer: 'svg', loop: false, autoplay: true, animationData: data,
+    });
+    slot.effect = anim;
+    anim.addEventListener('complete', () => { if (slot.effect === anim) stopEffect(slot); });
+  }).catch(() => {});
+}
+
+function stopEffect(slot) {
+  if (!slot.effect) return;
+  slot.effect.destroy();
+  slot.effect = null;
+  slot.fx.textContent = '';
+}
+
+function initReactions() {
+  const picker = $('#react-picker');
+  const btn = $('#react-btn');
+  btn.addEventListener('click', () => openPicker(picker.hidden));
+  const tabs = $('#react-tabs');
+  tabs.addEventListener('click', e => {
+    const t = e.target.closest('[data-tab]');
+    if (t) showTab(t.dataset.tab);
+  });
+  tabs.addEventListener('keydown', e => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    showTab(app.reactTab === 'stickers' ? 'effects' : 'stickers');
+    $('[aria-selected="true"]', tabs).focus();
+  });
+  picker.addEventListener('click', e => {
+    const b = e.target.closest('[data-sticker], [data-effect]');
+    if (!b || picker.classList.contains('cooling')) return;
+    send(b.dataset.effect
+      ? { type: 'react', effect: b.dataset.effect }
+      : { type: 'react', sticker: b.dataset.sticker });
+    // Stay open for more reactions, but rest for the server's one-a-second limit.
+    picker.classList.add('cooling');
+    setTimeout(() => picker.classList.remove('cooling'), 1000);
+  });
+  document.addEventListener('pointerdown', e => {
+    if (!picker.hidden && !picker.contains(e.target) && !btn.contains(e.target)) openPicker(false);
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !picker.hidden) openPicker(false); });
+}
+
 function initTopbar() {
   $('#copy-link').addEventListener('click', () => {
     const link = `${location.origin}/poker?code=${app.code}`;
@@ -1052,3 +1450,4 @@ initActions();
 initSidebar();
 initTopbar();
 initSettings();
+initReactions();

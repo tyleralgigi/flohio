@@ -126,13 +126,34 @@ input:not([type=range]):focus { outline: 2px solid var(--accent); outline-offset
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; }
 .panel h3 { margin: 0 0 10px; font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
 
+/* Collapsed sidebar: just a slim strip with the toggle (and an unread-chat count). */
+.sidebar-toggle {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+  color: var(--muted); font-size: .85rem; text-transform: uppercase; letter-spacing: .08em;
+}
+.sidebar-toggle .arrow { font-size: 1.2rem; line-height: 1; color: var(--text); }
+.sidebar-toggle .label { flex: 1; text-align: left; }
+.unread {
+  background: var(--accent); color: #1b1405; border-radius: 999px; font-weight: 800;
+  font-size: .75rem; letter-spacing: 0; min-width: 1.6em; padding: 0 .4em; line-height: 1.6; text-align: center;
+}
+.layout.collapsed { grid-template-columns: 1fr 3rem; }
+.layout.collapsed .sidebar { padding: 12px 6px; }
+.layout.collapsed .sidebar > .panel { display: none; }
+.layout.collapsed .sidebar-toggle { flex-direction: column; padding: .7em 0; }
+.layout.collapsed .sidebar-toggle .label { writing-mode: vertical-rl; }
+
 @media (max-width: 1000px) {
-  .layout { grid-template-columns: 1fr; }
+  .layout, .layout.collapsed { grid-template-columns: 1fr; }
   .sidebar { border-left: none; border-top: 1px solid var(--line); max-height: none; }
+  .layout.collapsed .sidebar { padding: 12px; }
+  .layout.collapsed .sidebar-toggle { flex-direction: row; padding: .55em 1em; }
+  .layout.collapsed .sidebar-toggle .label { writing-mode: horizontal-tb; }
+  .sidebar-toggle .arrow { rotate: 90deg; }
 }
 
 /* ---------------------------------------------------------------- table */
-.table-wrap { flex: 1; display: flex; align-items: center; justify-content: center; padding: 28px 0 64px; min-height: 0; }
+.table-wrap { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; padding: 28px 0 64px; min-height: 0; }
 .table {
   position: relative;
   width: min(100%, calc((100vh - 360px) * 1.9));
@@ -153,7 +174,9 @@ input:not([type=range]):focus { outline: 2px solid var(--accent); outline-offset
   position: absolute; left: 50%; top: 48%; transform: translate(-50%, -50%);
   display: flex; flex-direction: column; align-items: center; gap: 1cqw; z-index: 2;
 }
+/* The pot sits on the felt to the right of the board (mirroring the deck on the left). */
 .pot {
+  position: absolute; left: 100%; top: 62%; translate: 0 -50%; margin-left: 3cqw; white-space: nowrap;
   background: rgba(0,0,0,.4); padding: .15em .8em; border-radius: 999px; font-weight: 700;
   min-height: 1.4em; font-size: max(.95rem, calc(1.8cqw * var(--ui-scale)));
   font-variant-numeric: tabular-nums;
@@ -349,15 +372,158 @@ input:not([type=range]):focus { outline: 2px solid var(--accent); outline-offset
 
 .bet {
   position: absolute; transform: translate(-50%, -50%); z-index: 2;
-  display: flex; align-items: center; gap: .35em;
   font-weight: 800; font-variant-numeric: tabular-nums; font-size: max(.9rem, calc(1.55cqw * var(--ui-scale)));
-  background: rgba(0,0,0,.55); padding: .1em .65em .1em .2em; border-radius: 999px;
+  background: rgba(0,0,0,.55); padding: .05em .65em; border-radius: 999px;
 }
-.bet:empty { display: none; }
-.chip {
-  width: 1.15em; height: 1.15em; border-radius: 50%;
-  background: radial-gradient(circle, #fff 0 28%, var(--red) 30% 100%);
-  border: 2px dashed #fff;
+/* Kept in the layout while empty so chips have somewhere to fly to. */
+.bet:empty { visibility: hidden; }
+
+/* ---------------------------------------------------------------- chips */
+/* A pile sits on top of its label (a bet, the pot) and grows upwards and outwards from there.
+   Each chip is seen from slightly above: an elliptical face with a striped rim, and under it
+   the chip's edge (::before, the same ellipse dropped by one chip's thickness). The chip above
+   sits exactly one thickness higher, so it hides the face below and only the edges show. */
+.chips {
+  --chip: max(18px, calc(3cqw * var(--ui-scale)));
+  --thick: calc(var(--chip) * .14);
+  position: absolute; left: 50%; bottom: calc(100% + 2px); translate: -50% 0;
+  display: flex; align-items: flex-end; gap: 2px; pointer-events: none;
+  filter: drop-shadow(0 2px 2px rgba(0,0,0,.55));
+}
+.chip-col { display: flex; flex-direction: column-reverse; width: var(--chip); padding-bottom: var(--thick); }
+.chip-col i {
+  position: relative; z-index: 0; /* own stacking context: its edge stays under its face only */
+  display: block; height: calc(var(--chip) * .5); border-radius: 50%;
+  background:
+    radial-gradient(closest-side, var(--c) 58%, transparent 61%),
+    repeating-conic-gradient(var(--c) 0 22.5deg, #f3efe3 22.5deg 45deg);
+}
+.chip-col i::before {
+  content: ''; position: absolute; z-index: -1; left: 0; right: 0;
+  top: var(--thick); bottom: calc(var(--thick) * -1); border-radius: 50%;
+  background: repeating-linear-gradient(90deg, var(--edge) 0 15%, #e9e3d3 15% 22%);
+}
+/* Real stacks never line up perfectly: turn every chip a little so the stripes don't form columns. */
+.chip-col i:nth-child(3n + 2)::before { background-position: calc(var(--chip) * .06) 0; }
+.chip-col i:nth-child(3n)::before { background-position: calc(var(--chip) * -.05) 0; }
+.chip-col i + i { margin-bottom: calc(var(--chip) * -.5 + var(--thick)); }
+.chip-col.red { --c: #c8333a; --edge: #9a2229; }
+.chip-col.green { --c: #1f8a4c; --edge: #15663a; }
+.chip-col.black { --c: #34343a; --edge: #1d1d21; }
+.chip-col.purple { --c: #7046b8; --edge: #54318f; }
+.chip-col.gold { --c: #e0a526; --edge: #b37f14; }
+/* In front of the top seats there's no room above the label, so the pile sits just below it. */
+.bet.far .chips { bottom: auto; top: calc(100% + 2px); }
+/* A pile on its way somewhere: anchored by the bottom of the pile. */
+.chip-flight { position: absolute; width: 0; height: 0; z-index: 5; pointer-events: none; }
+.chip-flight .chips { bottom: 0; }
+
+/* ---------------------------------------------------------------- all-in fire */
+/* A red blaze around the camera of anyone who's all in. It sits behind the camera box, so only
+   the flames licking out around it show. Each flame (built by fireHtml) rises, shrinks and fades. */
+.fire {
+  display: none; position: absolute; left: 0; top: 0; width: 100%; aspect-ratio: 4 / 3;
+  z-index: -1; pointer-events: none;
+}
+.seat.all-in .fire { display: block; animation: ignite .45s ease-out; }
+@keyframes ignite { from { opacity: 0; scale: .7; } }
+.seat.all-in:not(.winner) .video-wrap { border-color: #ff4a1c; animation: fire-glow .9s ease-in-out infinite alternate; }
+@keyframes fire-glow {
+  from { box-shadow: 0 0 0 1px #ff2a12, 0 0 16px 3px rgba(255, 40, 10, .8); }
+  to { box-shadow: 0 0 0 2px #ff6a1c, 0 0 26px 7px rgba(255, 60, 10, .9); }
+}
+.fire::before {
+  content: ''; position: absolute; inset: -18% -12% 0; border-radius: 45% 45% 20% 20%;
+  background: radial-gradient(closest-side, rgba(255, 50, 10, .6), rgba(190, 0, 20, .3) 65%, transparent);
+  filter: blur(6px); animation: fire-pulse .7s ease-in-out infinite alternate;
+}
+@keyframes fire-pulse { to { opacity: .65; } }
+.fire .flames { position: absolute; inset: 0; filter: blur(2.5px) url(#fire-warp); }
+.fire .flames i {
+  position: absolute; left: var(--x); top: var(--y);
+  width: var(--s); aspect-ratio: 1; margin: calc(var(--s) / -2) 0 0 calc(var(--s) / -2);
+  border-radius: 50%; opacity: 0;
+  background: radial-gradient(circle, #ffe9a8 0, #ffa03a 14%, #ff3d17 34%, rgba(214, 0, 28, .85) 52%, rgba(150, 0, 20, 0) 70%);
+  animation: flame var(--d) cubic-bezier(.4, 0, .9, .6) var(--delay) infinite;
+}
+@keyframes flame {
+  12% { opacity: 1; }
+  60% { opacity: .9; }
+  100% { opacity: 0; translate: var(--drift) -230%; scale: .1; }
+}
+.fire .embers i {
+  position: absolute; left: var(--x); bottom: 30%; width: 4px; height: 4px; border-radius: 50%; opacity: 0;
+  background: #ffd08a; box-shadow: 0 0 6px 2px #ff3a12;
+  animation: ember var(--d) ease-out var(--delay) infinite;
+}
+@keyframes ember {
+  15% { opacity: 1; }
+  100% { opacity: 0; translate: var(--drift) -900%; scale: .4; }
+}
+/* With animations off, the fire becomes a steady red glow. */
+.still .fire .flames, .still .fire .embers { display: none; }
+.still .fire, .still .fire::before, .still .seat.all-in .video-wrap { animation: none; }
+.still .seat.all-in:not(.winner) .video-wrap { box-shadow: 0 0 0 2px #ff3a14, 0 0 22px 5px rgba(255, 50, 10, .85); }
+
+/* ---------------------------------------------------------------- reactions */
+.react { position: absolute; left: 0; bottom: 12px; z-index: 20; }
+.react-btn { font-size: 1.6rem; line-height: 1; padding: .3em .4em; border-radius: 999px; }
+.react-btn[aria-expanded="true"] { background: #26352f; border-color: var(--accent); }
+.react-picker {
+  position: absolute; left: 0; bottom: calc(100% + 8px);
+  width: min(21rem, calc(100vw - 32px));
+  display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0,0,0,.6); overflow: hidden;
+}
+.react-tabs { display: flex; border-bottom: 1px solid var(--line); }
+.react-tab {
+  flex: 1; padding: .6em 0; cursor: pointer; background: none; border: none;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  color: var(--muted); font: inherit; font-size: .85rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .08em;
+}
+.react-tab:hover { color: var(--text); }
+.react-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.react-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.react-grid {
+  max-height: min(20rem, 55vh); overflow-y: auto;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(4.25rem, 1fr)); gap: 6px; padding: 10px;
+}
+.react-item {
+  aspect-ratio: 1; padding: 4px; border-radius: 8px; cursor: pointer;
+  background: #0f1714; border: 1px solid transparent; transition: transform .1s, border-color .1s;
+}
+.react-item:hover, .react-item:focus-visible { border-color: var(--accent); transform: scale(1.08); }
+.react-item img, .react-item .fx-thumb { width: 100%; height: 100%; object-fit: contain; display: block; }
+.react-picker.cooling .react-item { opacity: .45; cursor: wait; transform: none; }
+/* An effect plays right over the sender's camera box (outside it, so a fold's grey-out doesn't tint it). */
+.seat .fx {
+  position: absolute; left: 0; top: 0; width: 100%; aspect-ratio: 4 / 3;
+  z-index: 7; pointer-events: none; overflow: hidden; border-radius: 10px;
+}
+.seat .fx:empty { display: none; }
+/* `scale`, not `transform`: Lottie sets its own inline transform on the svg. */
+.seat .fx svg { scale: var(--fx-zoom, 1); }
+/* A reaction pops up on the top-right corner of the sender's camera box, then fades away. */
+.seat .reaction {
+  position: absolute; right: -16%; top: -16%; z-index: 8;
+  width: 42%; aspect-ratio: 1; object-fit: contain; pointer-events: none;
+  filter: drop-shadow(0 4px 8px rgba(0,0,0,.6));
+  animation: reaction 3.5s ease-out forwards;
+}
+@keyframes reaction {
+  from { opacity: 0; transform: scale(.3) rotate(-12deg); }
+  8% { opacity: 1; transform: scale(1.15) rotate(4deg); }
+  14% { transform: scale(1) rotate(0deg); }
+  80% { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: translateY(-35%) scale(.9); }
+}
+@media (prefers-reduced-motion: reduce) {
+  @keyframes reaction {
+    from, to { opacity: 0; }
+    8%, 80% { opacity: 1; }
+  }
 }
 
 /* ---------------------------------------------------------------- action bar */
@@ -375,13 +541,25 @@ input:not([type=range]):focus { outline: 2px solid var(--accent); outline-offset
 .btn.call:hover { background: #1e4a34; }
 .btn.raise { background: var(--accent); border-color: var(--accent); color: #1b1405; }
 .btn.raise:hover { background: #ffd36b; }
+.deal-btn { width: min(20rem, 100%); }
+/* Check / Fold pre-action toggle, shown while you wait for your turn. */
+.btn.pre-action { display: flex; align-items: center; gap: .5em; color: var(--muted); }
+.pre-action .box {
+  width: 1em; height: 1em; border-radius: 4px; border: 2px solid var(--muted);
+  display: grid; place-items: center; font-size: .9em; line-height: 1;
+}
+.pre-action[aria-pressed="true"] { background: #3a1d1f; border-color: #a5484c; color: var(--text); }
+.pre-action[aria-pressed="true"] .box { background: #e5484d; border-color: #e5484d; }
+.pre-action[aria-pressed="true"] .box::after { content: "\2713"; color: #fff; font-weight: 900; }
+.pre-action .next { color: #ffb3b5; font-weight: 600; }
+.pre-action .next:empty { display: none; }
 .raise-controls { display: flex; flex-direction: column; gap: 8px; }
 .presets { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; }
 .raise-inputs { display: grid; grid-template-columns: 1fr 8rem; gap: 10px; align-items: center; }
 input[type=range] { width: 100%; accent-color: var(--accent); }
 
 /* ---------------------------------------------------------------- sidebar */
-.settings { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.settings { display: flex; flex-direction: column; gap: 8px; }
 .settings label { color: var(--muted); font-size: .85rem; }
 .settings input[type=number] { margin-top: 2px; padding: .4em .55em; }
 label.check { display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text); font-size: 1rem; }

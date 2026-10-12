@@ -245,3 +245,35 @@ def test_random_hands_conserve_chips():
                 t.act(pid, "check" if la["can_check"] else "call")
             assert total_chips(t) == total
         assert sum(p.stack for p in t.players.values()) == total
+
+
+# ----------------------------------------------------------------- dealing
+def test_only_host_deals_and_it_starts_the_game():
+    t, (a, b, c) = make_table([1000, 1000, 1000])
+    t.started = False
+    assert t.host_id == a.id
+    assert t.can_deal(a.id) and not t.can_deal(b.id)
+    with pytest.raises(ActionError):
+        t.deal(b.id)
+    t.deal(a.id)
+    assert t.started and t.in_progress and t.hand_no == 1
+    assert not t.can_deal(a.id)  # not while a hand is running
+    with pytest.raises(ActionError):
+        t.deal(a.id)
+
+
+def test_hands_wait_for_the_host_to_deal():
+    t, (a, b) = make_table([1000, 1000])
+    t.deal(a.id)
+    t.act(t.to_act, "fold")
+    assert t.phase == "complete" and t.can_deal(a.id)
+    t.deal(a.id)
+    assert t.hand_no == 2
+
+
+def test_anyone_can_deal_when_host_is_offline():
+    t, (a, b, c) = make_table([1000, 1000, 1000])
+    a.connected = False
+    assert t.can_deal(b.id) and t.can_deal(c.id)
+    t.deal(c.id)
+    assert t.in_progress
