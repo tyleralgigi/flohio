@@ -290,6 +290,8 @@ function exitToLobby(forget = true) {
   app.layoutN = -1;
   app.lastFeedId = 0;
   app.boardKey = '';
+  allInQueue.length = 0;
+  $$('.allin-banner').forEach(el => el.remove());
   app.potKey = '';
   app.potToken++;
   showPot(0, 0, 1);
@@ -668,6 +670,7 @@ function render(s) {
   app.slots.forEach((slot, i) => renderSeat(slot, bySlot[i] || null, s, winners, winCards, deal, nameDelay));
 
   renderChips(s, prev, sweep);
+  announceAllIns(s, prev);
   renderBoard(s, winCards, !prev, sweep);
   $('#banner').innerHTML = s.results
     .filter(r => r.label !== 'Returned')
@@ -827,6 +830,55 @@ function playFeedSounds(sounds) {
     Sound.play(name, delay);
     delay += 220;
   }
+}
+
+// ------------------------------------------------------------------ all-in announcement
+// Whenever someone goes all in, "NAME / ALL IN" fills the table in big 3D letters that roll in
+// one at a time, hold for a moment, then roll away. Several all-ins in a row take turns.
+const ALLIN_HOLD = 1900; // ms the words stay up once they've rolled in
+const allInQueue = [];
+
+function announceAllIns(s, prev) {
+  if (!prev) return;
+  const before = new Map(prev.hand_no === s.hand_no ? prev.players.map(p => [p.id, p.all_in]) : []);
+  for (const p of s.players) {
+    if (p.in_hand && p.all_in && !before.get(p.id)) allInQueue.push(p.name);
+  }
+  if (allInQueue.length && !$('.allin-banner')) showAllIn();
+}
+
+function rollingLine(text, cls) {
+  const line = document.createElement('div');
+  line.className = `allin-line ${cls}`;
+  [...text].forEach((ch, i) => {
+    const span = document.createElement('span');
+    span.className = 'ch';
+    span.textContent = ch === ' ' ? '\u00a0' : ch;
+    span.style.setProperty('--i', i);
+    line.append(span);
+  });
+  // Long names shrink so the line still fits across the table.
+  line.style.setProperty('--len', Math.max(6, text.length));
+  return line;
+}
+
+function showAllIn() {
+  const name = allInQueue.shift();
+  if (name === undefined) return;
+  const banner = document.createElement('div');
+  banner.className = 'allin-banner';
+  banner.setAttribute('role', 'status');
+  // Keep it snappier when more all-ins are waiting their turn.
+  banner.style.setProperty('--hold', `${allInQueue.length ? ALLIN_HOLD / 2 : ALLIN_HOLD}ms`);
+  banner.append(rollingLine(name, 'who'), rollingLine('ALL IN', 'what'));
+  $('#table').append(banner);
+  // The backdrop fades out once the letters have rolled away; then the next one (if any) starts.
+  banner.addEventListener('animationend', e => {
+    if (e.target === banner) {
+      banner.remove();
+      showAllIn();
+    }
+  });
 }
 
 // ------------------------------------------------------------------ chips

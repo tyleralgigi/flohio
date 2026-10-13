@@ -465,6 +465,58 @@ input:not([type=range]):focus { outline: 2px solid var(--accent); outline-offset
 .still .fire, .still .fire::before, .still .seat.all-in .video-wrap { animation: none; }
 .still .seat.all-in:not(.winner) .video-wrap { box-shadow: 0 0 0 2px #ff3a14, 0 0 22px 5px rgba(255, 50, 10, .85); }
 
+/* ---------------------------------------------------------------- all-in announcement */
+/* "NAME / ALL IN" across the whole table: heavy letters extruded into 3D with stacked shadows,
+   each rolling in like a drum turning over (staggered by --i), then rolling away again.
+   The banner's own fade-out is timed to end after the last letter has gone. */
+.allin-banner {
+  --roll: .55s; --step: 45ms;
+  position: absolute; inset: -4% -2%; z-index: 15; pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1cqw;
+  background: radial-gradient(ellipse at center, rgba(40, 0, 0, .72) 0%, rgba(10, 0, 0, .45) 55%, transparent 80%);
+  animation: allin-dim calc(var(--roll) * 2 + var(--hold) + 600ms) ease-in-out forwards;
+}
+@keyframes allin-dim { from, to { opacity: 0; } 8%, 85% { opacity: 1; } }
+.allin-line {
+  display: flex; perspective: 600px; white-space: nowrap; line-height: .95;
+  font-family: Impact, 'Anton', 'Arial Black', 'Helvetica Neue', sans-serif; font-weight: 900;
+  text-transform: uppercase; letter-spacing: .03em;
+}
+.allin-line.who {
+  font-size: min(9cqw, calc(140cqw / var(--len)));
+  color: #fff7e0;
+  text-shadow:
+    1px 1px 0 #e8b33a, 2px 2px 0 #d9a12c, 3px 3px 0 #c98e22, 4px 4px 0 #b77b1a,
+    5px 5px 0 #a26814, 6px 6px 0 #8c560f, 7px 7px 0 #74440b,
+    8px 10px 14px rgba(0, 0, 0, .7), 0 0 30px rgba(255, 200, 80, .35);
+}
+.allin-line.what {
+  font-size: min(17cqw, calc(170cqw / var(--len)));
+  color: #ff3b2a;
+  text-shadow:
+    1px 1px 0 #e02a1c, 2px 2px 0 #cc2418, 3px 3px 0 #b81f15, 4px 4px 0 #a31a12,
+    5px 5px 0 #8e160f, 6px 6px 0 #79120c, 7px 7px 0 #640e0a, 8px 8px 0 #500b08,
+    9px 9px 0 #3d0806, 10px 13px 18px rgba(0, 0, 0, .75),
+    0 0 40px rgba(255, 60, 20, .55), 0 0 90px rgba(255, 30, 0, .35);
+}
+.allin-line .ch {
+  display: inline-block; transform-origin: 50% 50% -.45em; backface-visibility: hidden;
+  animation:
+    allin-roll-in var(--roll) cubic-bezier(.2, .9, .3, 1.25) calc(var(--i) * var(--step)) both,
+    allin-roll-out calc(var(--roll) * .8) ease-in calc(var(--roll) + var(--hold) + var(--i) * var(--step)) forwards;
+}
+.allin-line.what .ch { animation-delay: calc(150ms + var(--i) * var(--step)), calc(150ms + var(--roll) + var(--hold) + var(--i) * var(--step)); }
+@keyframes allin-roll-in {
+  from { transform: rotateX(-100deg) translateY(.4em) scale(.6); opacity: 0; }
+  60% { opacity: 1; }
+  to { transform: none; opacity: 1; }
+}
+@keyframes allin-roll-out {
+  to { transform: rotateX(100deg) translateY(-.4em) scale(.8); opacity: 0; }
+}
+/* With animations off the words simply fade in and out with the backdrop. */
+.still .allin-line .ch { animation: none; }
+
 /* ---------------------------------------------------------------- reactions */
 .react { position: absolute; left: 0; bottom: 12px; z-index: 20; }
 .react-btn { font-size: 1.6rem; line-height: 1; padding: .3em .4em; border-radius: 999px; }
